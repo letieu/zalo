@@ -32,6 +32,7 @@ export function SettingsModal({
   const [geminiKey, setGeminiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
   const [openaiKey, setOpenaiKey] = useState('');
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState('');
   const [openaiModel, setOpenaiModel] = useState('gpt-4o-mini');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModel, setOllamaModel] = useState('llama3');
@@ -45,7 +46,7 @@ export function SettingsModal({
       setGeminiKey(settings.gemini_api_key || '');
       setGeminiModel(settings.gemini_model || 'gemini-2.5-flash');
       setOpenaiKey(settings.openai_api_key || '');
-      setOpenaiModel(settings.openai_model || 'gpt-4o-mini');
+      setOpenaiBaseUrl(settings.openai_base_url || '');
       setOllamaUrl(settings.ollama_url || 'http://localhost:11434');
       setOllamaModel(settings.ollama_model || 'llama3');
       setAutoExtraction(settings.auto_task_extraction ?? true);
@@ -63,7 +64,7 @@ export function SettingsModal({
       gemini_api_key: geminiKey,
       gemini_model: geminiModel,
       openai_api_key: openaiKey,
-      openai_model: openaiModel,
+      openai_base_url: openaiBaseUrl,
       ollama_url: ollamaUrl,
       ollama_model: ollamaModel,
       auto_task_extraction: autoExtraction,
@@ -235,6 +236,13 @@ export function SettingsModal({
                 value={openaiKey}
                 onChange={(e) => setOpenaiKey(e.target.value)}
                 className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              <input
+                type="text"
+                placeholder="Base URL (mặc định api.openai.com)"
+                value={openaiBaseUrl}
+                onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none"
               />
               <input
                 type="text"

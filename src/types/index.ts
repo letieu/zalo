@@ -52,6 +52,7 @@ export interface AppSettings {
   gemini_api_key?: string;
   gemini_model?: string;
   openai_api_key?: string;
+  openai_base_url?: string;
   openai_model?: string;
   ollama_url?: string;
   ollama_model?: string;

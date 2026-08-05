@@ -185,7 +185,7 @@ export class AIProcessor {
     pendingTasks: Task[],
     settings: AppSettings
   ): Promise<AIAnalysisResult> {
-    const openai = new OpenAI({ apiKey: settings.openai_api_key });
+    const openai = new OpenAI({ apiKey: settings.openai_api_key, baseURL: settings.openai_base_url || undefined });
     const modelName = settings.openai_model || 'gpt-4o-mini';
 
     const prompt = this.buildLLMPrompt(messages, pendingTasks);

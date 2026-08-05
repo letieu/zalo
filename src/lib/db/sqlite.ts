@@ -73,6 +73,7 @@ export function initDB() {
     gemini_api_key: '',
     gemini_model: 'gemini-2.5-flash',
     openai_api_key: '',
+    openai_base_url: '',
     openai_model: 'gpt-4o-mini',
     ollama_url: 'http://localhost:11434',
     ollama_model: 'llama3',
