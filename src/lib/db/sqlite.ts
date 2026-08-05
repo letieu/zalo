@@ -1,14 +1,13 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { Conversation, Message, Task, AppSettings } from '@/types';
+import { Conversation, Message, Task, AppSettings, Contact, Memory, Sentiment, OutboxEventType, OutboxEvent } from '@/types';
 
 const dbDir = path.join(process.cwd(), 'data');
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
+// Test/ops hook: point the store at a temp file (vitest sets this).
+const dbPath = process.env.ZALO_DB_PATH || path.join(dbDir, 'zalo_tasks.db');
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-const dbPath = path.join(dbDir, 'zalo_tasks.db');
 const db = new Database(dbPath);
 
 // Enable WAL mode for high performance
@@ -64,12 +63,73 @@ export function initDB() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
-  `);
 
-  // Seed default settings if empty
+    -- Personal Communication OS v2: knowledge layer
+    CREATE TABLE IF NOT EXISTS contacts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      aliases TEXT DEFAULT '[]',
+      phones TEXT DEFAULT '[]',
+      emails TEXT DEFAULT '[]',
+      company TEXT,
+      relationship TEXT,
+      importance INTEGER DEFAULT 0,
+      notes TEXT,
+      summary TEXT,
+      source_provider TEXT DEFAULT 'zalo',
+      external_id TEXT,
+      last_interaction_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      contact_id TEXT,
+      conversation_id TEXT,
+      category TEXT NOT NULL,
+      content TEXT NOT NULL,
+      confidence REAL DEFAULT 0.7,
+      source_msg_id TEXT,
+      source_msg_text TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (contact_id, category, content)
+    );
+
+    -- Outbox: every ingest event published once, workers consume independently
+    CREATE TABLE IF NOT EXISTS events (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS event_deliveries (
+      event_id TEXT NOT NULL,
+      worker TEXT NOT NULL,
+      processed_at TEXT NOT NULL,
+      PRIMARY KEY (event_id, worker)
+    );
+
+    CREATE TABLE IF NOT EXISTS message_embeddings (
+      message_id TEXT PRIMARY KEY,
+      embedding TEXT NOT NULL,
+      dims INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS briefs (
+      date TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+   `);
+
+  migrateConversationColumns();
+
   const defaultSettings: Record<string, string> = {
     zalo_mode: 'mock',
-    ai_provider: 'smart_heuristic',
+    ai_provider: 'omniroute',
     gemini_api_key: '',
     gemini_model: 'gemini-2.5-flash',
     openai_api_key: '',
@@ -77,10 +137,16 @@ export function initDB() {
     openai_model: 'gpt-4o-mini',
     ollama_url: 'http://localhost:11434',
     ollama_model: 'llama3',
+    // Local omniroute gateway (k3s). Env can override for non-node hosts.
+    omniroute_base_url: process.env.OMNIROUTE_BASE_URL || 'http://10.43.196.168:20128/v1',
+    omniroute_api_key: process.env.OMNIROUTE_API_KEY || '',
+    omniroute_model: process.env.OMNIROUTE_MODEL || 'auto/best-fast',
     auto_task_extraction: 'true',
     auto_task_completion: 'true',
+    auto_memory_extraction: 'true',
+    auto_summary: 'true',
+    auto_embeddings: 'true',
   };
-
   const checkStmt = db.prepare('SELECT COUNT(*) as count FROM settings');
   const { count } = checkStmt.get() as { count: number };
   if (count === 0) {
@@ -92,6 +158,50 @@ export function initDB() {
 
   // Seed initial mock conversations if table is empty
   seedMockData();
+}
+
+
+/**
+ * Wipe all rows and re-run initDB (schema + seed). Used by tests to get a
+ * deterministic starting state; harmless in dev tooling.
+ */
+export function resetDatabase(): void {
+  db.exec(`
+    DELETE FROM event_deliveries;
+    DELETE FROM events;
+    DELETE FROM message_embeddings;
+    DELETE FROM briefs;
+    DELETE FROM memories;
+    DELETE FROM tasks;
+    DELETE FROM messages;
+    DELETE FROM conversations;
+    DELETE FROM contacts;
+    DELETE FROM settings;
+  `);
+  initDB();
+}
+
+/**
+ * v1 → v2: conversations become living documents. ALTER TABLE is not
+ * idempotent in SQLite, so add missing columns one by one.
+ */
+function migrateConversationColumns() {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>).map(c => c.name)
+  );
+  const additions: Array<[string, string]> = [
+    ['summary', 'TEXT'],
+    ['open_topics', "TEXT DEFAULT '[]'"],
+    ['sentiment', "TEXT DEFAULT 'neutral'"],
+    ['importance', 'INTEGER DEFAULT 0'],
+    ['contact_id', 'TEXT'],
+    ['last_ai_summary_at', 'TEXT'],
+  ];
+  for (const [name, def] of additions) {
+    if (!cols.has(name)) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${def}`);
+    }
+  }
 }
 
 function seedMockData() {
@@ -301,6 +411,42 @@ function seedMockData() {
     new Date(Date.now() - 180 * 60 * 1000).toISOString(),
     new Date(Date.now() - 120 * 60 * 1000).toISOString()
   );
+  // Seed contacts (knowledge objects) linked to individual conversations
+  const insertContact = db.prepare(`
+    INSERT INTO contacts (id, name, aliases, phones, emails, company, relationship, importance, notes, summary, source_provider, external_id, last_interaction_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const seedContact = (
+    id: string,
+    name: string,
+    phone: string,
+    email: string,
+    company: string,
+    relationship: string,
+    importance: number,
+    convId: string
+  ) => {
+    insertContact.run(
+      id, name, JSON.stringify([]), JSON.stringify([phone]), JSON.stringify([email]),
+      company, relationship, importance, '', '', 'zalo', name,
+      now, now, now
+    );
+    db.prepare('UPDATE conversations SET contact_id = ? WHERE id = ?').run(id, convId);
+  };
+  seedContact('ct_tuan', 'Anh Tuấn', '0908123456', 'tuan@tinhoca.com', 'Công ty Tin Học A', 'khách hàng', 90, conv1Id);
+  seedContact('ct_mai', 'Chị Mai', '0912987654', '', 'Shop Thời Trang', 'khách hàng', 70, conv2Id);
+  seedContact('ct_duc', 'Đức', '0933112233', '', '', 'cộng tác viên', 60, conv3Id);
+
+  // Seed memories from the mock conversations
+  const insertMemory = db.prepare(`
+    INSERT OR IGNORE INTO memories (id, contact_id, conversation_id, category, content, confidence, source_msg_id, source_msg_text, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertMemory.run('mem_1', 'ct_tuan', conv1Id, 'company', 'Công ty Tin Học A', 0.95, msg2Id, 'Em gửi cho anh báo giá 5 bộ máy tính Dell sang email tuan@tinhoca.com trước 4h chiều nay nhé.', now);
+  insertMemory.run('mem_2', 'ct_tuan', conv1Id, 'email', 'tuan@tinhoca.com', 0.95, msg2Id, 'Em gửi cho anh báo giá 5 bộ máy tính Dell sang email tuan@tinhoca.com trước 4h chiều nay nhé.', now);
+  insertMemory.run('mem_3', 'ct_mai', conv2Id, 'location', 'Địa chỉ giao hàng: 123 Nguyễn Trãi, Quận 5', 0.9, msg4Id, 'Nhớ đổi giúp chị địa chỉ giao hàng sang 123 Nguyễn Trãi, Quận 5 nhé, sđt nhận 0912987654.', now);
+  insertMemory.run('mem_4', 'ct_mai', conv2Id, 'product', 'Khách mua 50 áo thun', 0.9, msg3Id, 'Đơn hàng 50 áo thun hôm qua em note lại chưa?', now);
+  insertMemory.run('mem_5', 'ct_duc', conv3Id, 'other', 'Đức là designer, làm banner Tết', 0.85, msg5Id, 'Đức ơi banner Tết bị lệch logo, nhờ em chỉnh lại màu đỏ tươi hơn nhé.', now);
 }
 
 // Auto-run initDB
@@ -337,7 +483,69 @@ interface DbTaskRow {
   conversation_name?: string;
 }
 
+interface DbContactRow {
+  id: string;
+  name: string;
+  aliases: string;
+  phones: string;
+  emails: string;
+  company?: string;
+  relationship?: string;
+  importance: number;
+  notes?: string;
+  summary?: string;
+  source_provider: string;
+  external_id?: string;
+  last_interaction_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function parseContact(row: DbContactRow): Contact {
+  return {
+    id: row.id,
+    name: row.name,
+    aliases: JSON.parse(row.aliases || '[]') as string[],
+    phones: JSON.parse(row.phones || '[]') as string[],
+    emails: JSON.parse(row.emails || '[]') as string[],
+    company: row.company || undefined,
+    relationship: row.relationship || undefined,
+    importance: row.importance || 0,
+    notes: row.notes || undefined,
+    summary: row.summary || undefined,
+    source_provider: row.source_provider,
+    external_id: row.external_id || undefined,
+    last_interaction_at: row.last_interaction_at || undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function parseConversationRow(row: Record<string, unknown>): Conversation {
+  return {
+    id: row.id as string,
+    zalo_thread_id: row.zalo_thread_id as string,
+    name: row.name as string,
+    avatar: (row.avatar as string) || '',
+    phone: (row.phone as string) || undefined,
+    type: row.type as Conversation['type'],
+    last_message: (row.last_message as string) || '',
+    unread_count: Number(row.unread_count || 0),
+    updated_at: row.updated_at as string,
+    pending_task_count: row.pending_task_count !== undefined ? Number(row.pending_task_count) : undefined,
+    summary: (row.summary as string) || undefined,
+    open_topics: row.open_topics ? (JSON.parse(row.open_topics as string) as string[]) : undefined,
+    sentiment: (row.sentiment as Sentiment) || undefined,
+    importance: row.importance !== undefined ? Number(row.importance) : undefined,
+    contact_id: (row.contact_id as string) || undefined,
+    last_ai_summary_at: (row.last_ai_summary_at as string) || undefined,
+  };
+}
+
 export const dbQueries = {
+  // Transactions
+  withTransaction: <T>(fn: () => T): T => db.transaction(fn)(),
+
   // Conversations
   getConversations: (): Conversation[] => {
     const stmt = db.prepare(`
@@ -346,18 +554,19 @@ export const dbQueries = {
       FROM conversations c 
       ORDER BY c.updated_at DESC
     `);
-    return stmt.all() as Conversation[];
+    return (stmt.all() as Array<Record<string, unknown>>).map(parseConversationRow);
   },
 
   getConversationById: (id: string): Conversation | undefined => {
-    const stmt = db.prepare('SELECT * FROM conversations WHERE id = ?');
-    return stmt.get(id) as Conversation | undefined;
+    const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? parseConversationRow(row) : undefined;
   },
 
   getConversationByThreadId: (threadId: string): Conversation | undefined => {
-    const stmt = db.prepare('SELECT * FROM conversations WHERE zalo_thread_id = ?');
-    return stmt.get(threadId) as Conversation | undefined;
+    const row = db.prepare('SELECT * FROM conversations WHERE zalo_thread_id = ?').get(threadId) as Record<string, unknown> | undefined;
+    return row ? parseConversationRow(row) : undefined;
   },
+
 
   upsertConversation: (thread: {
     zalo_thread_id: string;
@@ -579,7 +788,7 @@ export const dbQueries = {
     const rows = stmt.all() as Array<{ key: string; value: string }>;
     const settingsObj: Record<string, string | boolean> = {};
     for (const row of rows) {
-      if (row.key === 'auto_task_extraction' || row.key === 'auto_task_completion') {
+      if (row.key === 'auto_task_extraction' || row.key === 'auto_task_completion' || row.key === 'auto_memory_extraction' || row.key === 'auto_summary' || row.key === 'auto_embeddings') {
         settingsObj[row.key] = row.value === 'true';
       } else {
         settingsObj[row.key] = row.value;
@@ -596,4 +805,205 @@ export const dbQueries = {
       }
     }
   },
-};
+  // ===== Personal Communication OS v2: contacts, memories, events, search =====
+
+  // Contacts
+  getContacts: (): Contact[] => {
+    const stmt = db.prepare('SELECT * FROM contacts ORDER BY importance DESC, updated_at DESC');
+    return (stmt.all() as DbContactRow[]).map(parseContact);
+  },
+
+  getContactById: (id: string): Contact | undefined => {
+    const row = db.prepare('SELECT * FROM contacts WHERE id = ?').get(id) as DbContactRow | undefined;
+    return row ? parseContact(row) : undefined;
+  },
+
+  /**
+   * Resolve a contact for a message sender. Reuses existing contacts by
+   * name/phone/external_id, else creates a new knowledge object.
+   */
+  upsertContact: (input: {
+    name: string;
+    external_id?: string;
+    phone?: string;
+    email?: string;
+    source_provider?: string;
+    aliases?: string[];
+  }): Contact => {
+    const nowIso = new Date().toISOString();
+    const existing = input.external_id
+      ? db.prepare('SELECT * FROM contacts WHERE external_id = ? LIMIT 1').get(input.external_id) as DbContactRow | undefined
+      : undefined;
+    const byName = !existing
+      ? db.prepare('SELECT * FROM contacts WHERE name = ? OR aliases LIKE ? LIMIT 1')
+          .get(input.name, `%"${input.name}"%`) as DbContactRow | undefined
+      : undefined;
+    const row = existing || byName;
+    if (row) {
+      const phones = new Set(JSON.parse(row.phones || '[]') as string[]);
+      const emails = new Set(JSON.parse(row.emails || '[]') as string[]);
+      const aliases = new Set(JSON.parse(row.aliases || '[]') as string[]);
+      if (input.phone && !phones.has(input.phone)) phones.add(input.phone);
+      if (input.email && !emails.has(input.email)) emails.add(input.email);
+      aliases.add(input.name);
+      db.prepare(`
+        UPDATE contacts SET name = ?, aliases = ?, phones = ?, emails = ?,
+          external_id = COALESCE(?, external_id), updated_at = ?
+        WHERE id = ?
+      `).run(input.name, JSON.stringify([...aliases]), JSON.stringify([...phones]), JSON.stringify([...emails]), input.external_id || null, nowIso, row.id);
+      const refreshed = dbQueries.getContactById(row.id);
+      if (refreshed) return refreshed;
+      return parseContact(row);
+    }
+    const id = 'ct_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const phones = input.phone ? JSON.stringify([input.phone]) : '[]';
+    const emails = input.email ? JSON.stringify([input.email]) : '[]';
+    db.prepare(`
+      INSERT INTO contacts (id, name, aliases, phones, emails, company, relationship, importance, notes, summary, source_provider, external_id, last_interaction_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, '', '', 0, '', '', ?, ?, NULL, ?, ?)
+    `).run(id, input.name, '[]', phones, emails, input.source_provider || 'zalo', input.external_id || null, nowIso, nowIso);
+    return dbQueries.getContactById(id) as Contact;
+  },
+
+  updateContactProfile: (id: string, patch: {
+    company?: string;
+    relationship?: string;
+    importance?: number;
+    notes?: string;
+    summary?: string;
+  }) => {
+    const fields: string[] = [];
+    const params: (string | number)[] = [];
+    if (patch.company !== undefined) { fields.push('company = ?'); params.push(patch.company); }
+    if (patch.relationship !== undefined) { fields.push('relationship = ?'); params.push(patch.relationship); }
+    if (patch.importance !== undefined) { fields.push('importance = ?'); params.push(patch.importance); }
+    if (patch.notes !== undefined) { fields.push('notes = ?'); params.push(patch.notes); }
+    if (patch.summary !== undefined) { fields.push('summary = ?'); params.push(patch.summary); }
+    if (fields.length === 0) return;
+    params.push(new Date().toISOString(), id);
+    db.prepare(`UPDATE contacts SET ${fields.join(', ')}, updated_at = ? WHERE id = ?`).run(...params);
+  },
+
+  touchContactInteraction: (id: string) => {
+    db.prepare('UPDATE contacts SET last_interaction_at = ?, updated_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), new Date().toISOString(), id);
+  },
+
+  // Memories
+  getMemories: (limit = 20, contactId?: string): Memory[] => {
+    const rows = contactId
+      ? db.prepare('SELECT * FROM memories WHERE contact_id = ? ORDER BY created_at DESC LIMIT ?').all(contactId, limit)
+      : db.prepare('SELECT * FROM memories ORDER BY created_at DESC LIMIT ?').all(limit);
+    return rows as Memory[];
+  },
+
+  addMemory: (mem: Omit<Memory, 'id' | 'created_at'>): Memory | undefined => {
+    const id = 'mem_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const created = new Date().toISOString();
+    try {
+      db.prepare(`
+        INSERT INTO memories (id, contact_id, conversation_id, category, content, confidence, source_msg_id, source_msg_text, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, mem.contact_id || null, mem.conversation_id || null, mem.category, mem.content, mem.confidence ?? 0.7, mem.source_msg_id || null, mem.source_msg_text || null, created);
+      return { ...mem, id, created_at: created } as Memory;
+    } catch {
+      // UNIQUE(contact_id, category, content) — already known, keep the original
+      return undefined;
+    }
+  },
+
+  // Outbox: events published once, delivered to each worker exactly once
+  publishEvent: (type: OutboxEventType, payload: Record<string, unknown>): OutboxEvent => {
+    const evt: OutboxEvent = {
+      id: 'evt_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+      type,
+      payload,
+      created_at: new Date().toISOString(),
+    };
+    db.prepare('INSERT INTO events (id, type, payload, created_at) VALUES (?, ?, ?, ?)')
+      .run(evt.id, evt.type, JSON.stringify(evt.payload), evt.created_at);
+    return evt;
+  },
+
+  getPendingEvents: (): OutboxEvent[] => {
+    const rows = db.prepare('SELECT * FROM events ORDER BY created_at ASC').all() as Array<{
+      id: string; type: string; payload: string; created_at: string;
+    }>;
+    return rows.map(r => ({ id: r.id, type: r.type as OutboxEventType, payload: JSON.parse(r.payload) as Record<string, unknown>, created_at: r.created_at }));
+  },
+
+  isEventDelivered: (eventId: string, worker: string): boolean => {
+    const row = db.prepare('SELECT 1 FROM event_deliveries WHERE event_id = ? AND worker = ?')
+      .get(eventId, worker) as { processed_at: string } | undefined;
+    return Boolean(row);
+  },
+
+  markEventDelivered: (eventId: string, worker: string) => {
+    db.prepare('INSERT OR IGNORE INTO event_deliveries (event_id, worker, processed_at) VALUES (?, ?, ?)')
+      .run(eventId, worker, new Date().toISOString());
+  },
+
+  // Conversation living-document fields
+  updateConversationMeta: (conversationId: string, patch: {
+    summary?: string;
+    open_topics?: string[];
+    sentiment?: Sentiment;
+    importance?: number;
+    contact_id?: string;
+    last_ai_summary_at?: string;
+  }) => {
+    const fields: string[] = [];
+    const params: (string | number)[] = [];
+    if (patch.summary !== undefined) { fields.push('summary = ?'); params.push(patch.summary); }
+    if (patch.open_topics !== undefined) { fields.push('open_topics = ?'); params.push(JSON.stringify(patch.open_topics)); }
+    if (patch.sentiment !== undefined) { fields.push('sentiment = ?'); params.push(patch.sentiment); }
+    if (patch.importance !== undefined) { fields.push('importance = ?'); params.push(patch.importance); }
+    if (patch.contact_id !== undefined) { fields.push('contact_id = ?'); params.push(patch.contact_id); }
+    if (patch.last_ai_summary_at !== undefined) { fields.push('last_ai_summary_at = ?'); params.push(patch.last_ai_summary_at); }
+    if (fields.length === 0) return;
+    params.push(conversationId);
+    db.prepare(`UPDATE conversations SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+  },
+
+  getMessageById: (id: string): Message | undefined => {
+    const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined;
+    if (!row) return undefined;
+    return { ...row, is_from_me: Boolean(row.is_from_me), ai_processed: Boolean(row.ai_processed) };
+  },
+
+  // Embeddings (local vectors; identical contract to pgvector later)
+  getMessageEmbedding: (messageId: string): number[] | undefined => {
+    const row = db.prepare('SELECT embedding FROM message_embeddings WHERE message_id = ?').get(messageId) as { embedding: string } | undefined;
+    return row ? (JSON.parse(row.embedding) as number[]) : undefined;
+  },
+
+  saveMessageEmbedding: (messageId: string, embedding: number[]) => {
+    db.prepare(`
+      INSERT INTO message_embeddings (message_id, embedding, dims, created_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET embedding = excluded.embedding, dims = excluded.dims
+    `).run(messageId, JSON.stringify(embedding), embedding.length, new Date().toISOString());
+  },
+
+  getAllEmbeddedMessages: (): Array<{ message: Message; embedding: number[] }> => {
+    const rows = db.prepare(`
+      SELECT m.*, e.embedding FROM messages m
+      INNER JOIN message_embeddings e ON e.message_id = m.id
+    `).all() as Array<DbMessageRow & { embedding: string }>;
+    return rows.map(r => ({
+      message: { ...r, is_from_me: Boolean(r.is_from_me), ai_processed: Boolean(r.ai_processed) },
+      embedding: JSON.parse(r.embedding) as number[],
+    }));
+  },
+
+  // Daily briefs
+  getBrief: (date: string): string | null => {
+    const row = db.prepare('SELECT content FROM briefs WHERE date = ?').get(date) as { content: string } | undefined;
+    return row?.content ?? null;
+  },
+
+  saveBrief: (date: string, content: string) => {
+    db.prepare('INSERT OR REPLACE INTO briefs (date, content, created_at) VALUES (?, ?, ?)')
+      .run(date, content, new Date().toISOString());
+  },
+ };

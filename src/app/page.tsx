@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Conversation, Message, Task, AppSettings, TaskStatus, TaskPriority } from '@/types';
+import { Conversation, Message, Task, AppSettings, TaskStatus, TaskPriority, DashboardData } from '@/types';
 import { Sidebar } from '@/components/Sidebar';
+import { LayoutDashboard, MessageSquareText } from 'lucide-react';
+import DashboardView from '@/components/DashboardView';
 import { ChatWindow } from '@/components/ChatWindow';
 import { TaskPanel } from '@/components/TaskPanel';
 import { SettingsModal } from '@/components/SettingsModal';
@@ -24,9 +26,12 @@ export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<AppSettings>({
     zalo_mode: 'mock',
-    ai_provider: 'smart_heuristic',
+    ai_provider: 'omniroute',
     auto_task_extraction: true,
     auto_task_completion: true,
+    auto_memory_extraction: true,
+    auto_summary: true,
+    auto_embeddings: true,
   });
 
   // UI state
@@ -34,6 +39,9 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [view, setView] = useState<'dashboard' | 'chats'>('dashboard');
+  const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
   const [zaloStatus, setZaloStatus] = useState<ZaloStatusInfo | null>(null);
   const [isZaloConnectOpen, setIsZaloConnectOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -78,6 +86,20 @@ export default function Home() {
     }
   }, []);
 
+  const fetchDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    try {
+      const res = await fetch('/api/dashboard');
+      const data = await res.json();
+      setDashboardData(data);
+    } catch {
+      setDashboardData(null);
+    } finally {
+      setDashboardLoading(false);
+    }
+  }, []);
+
+
   const handleSwitchToZalo = useCallback(async () => {
     try {
       const res = await fetch('/api/settings', {
@@ -110,12 +132,18 @@ export default function Home() {
       console.error('Failed to fetch messages & tasks:', err);
     }
   }, []);
+  const openConversationFromDashboard = useCallback((conversationId: string) => {
+    setView('chats');
+    setActiveConvId(conversationId);
+    fetchMessagesAndTasks(conversationId);
+  }, [fetchMessagesAndTasks]);
 
   useEffect(() => {
     fetchConversations();
     fetchSettings();
     fetchZaloStatus();
-  }, [fetchConversations, fetchSettings, fetchZaloStatus]);
+    fetchDashboard();
+  }, [fetchConversations, fetchSettings, fetchZaloStatus, fetchDashboard]);
 
   // Poll Zalo status unconditionally so a lazy cookie auto-login (fired
   // asynchronously by /api/zalo/status) is observed when `connected` flips.
@@ -326,7 +354,10 @@ export default function Home() {
       <Sidebar
         conversations={conversations}
         activeConvId={activeConvId}
-        onSelectConversation={(id) => setActiveConvId(id)}
+        onSelectConversation={(id) => {
+          setActiveConvId(id);
+          setView('chats');
+        }}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenSimulator={() => setIsSimulatorOpen(true)}
         zaloMode={settings.zalo_mode}
@@ -336,32 +367,63 @@ export default function Home() {
         onSwitchToZalo={handleSwitchToZalo}
       />
 
-      {/* Main Chat Window */}
-      <ChatWindow
-        conversation={activeConversation}
-        zaloMode={settings.zalo_mode}
-        messages={messages}
-        tasks={tasks}
-        onSendMessage={handleSendMessage}
-        onToggleTaskPanel={() => setIsTaskPanelOpen(!isTaskPanelOpen)}
-        isTaskPanelOpen={isTaskPanelOpen}
-        onAnalyzeChat={handleAnalyzeChat}
-        isAnalyzing={isAnalyzing}
-        composerError={sendError}
-        onClearComposerError={() => setSendError(null)}
-      />
+      {/* Main column: view toggle + active view */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <nav className="flex items-center gap-1 border-b border-slate-200 bg-white px-4 py-2">
+          <button
+            onClick={() => setView('dashboard')}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              view === 'dashboard' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            <LayoutDashboard className="h-4 w-4" /> Bảng điều khiển
+          </button>
+          <button
+            onClick={() => setView('chats')}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              view === 'chats' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            <MessageSquareText className="h-4 w-4" /> Trò chuyện
+          </button>
+        </nav>
 
-      {/* Right AI Task Drawer */}
-      {isTaskPanelOpen && (
-        <TaskPanel
-          tasks={tasks}
-          conversationName={activeConversation?.name}
-          onToggleTaskStatus={handleToggleTaskStatus}
-          onAddTask={handleAddTask}
-          onDeleteTask={handleDeleteTask}
-          onClose={() => setIsTaskPanelOpen(false)}
-        />
-      )}
+        {view === 'dashboard' ? (
+          <DashboardView
+            data={dashboardData}
+            loading={dashboardLoading}
+            onRefresh={fetchDashboard}
+            onOpenConversation={openConversationFromDashboard}
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1">
+            <ChatWindow
+              conversation={activeConversation}
+              zaloMode={settings.zalo_mode}
+              messages={messages}
+              tasks={tasks}
+              onSendMessage={handleSendMessage}
+              onToggleTaskPanel={() => setIsTaskPanelOpen(!isTaskPanelOpen)}
+              isTaskPanelOpen={isTaskPanelOpen}
+              onAnalyzeChat={handleAnalyzeChat}
+              isAnalyzing={isAnalyzing}
+              composerError={sendError}
+              onClearComposerError={() => setSendError(null)}
+            />
+
+            {isTaskPanelOpen && (
+              <TaskPanel
+                tasks={tasks}
+                conversationName={activeConversation?.name}
+                onToggleTaskStatus={handleToggleTaskStatus}
+                onAddTask={handleAddTask}
+                onDeleteTask={handleDeleteTask}
+                onClose={() => setIsTaskPanelOpen(false)}
+              />
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Modals & Drawers */}
       <SettingsModal

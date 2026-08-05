@@ -36,8 +36,13 @@ export function SettingsModal({
   const [openaiModel, setOpenaiModel] = useState('gpt-4o-mini');
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [ollamaModel, setOllamaModel] = useState('llama3');
+  const [omnirouteBaseUrl, setOmnirouteBaseUrl] = useState('http://10.43.196.168:20128/v1');
+  const [omnirouteModel, setOmnirouteModel] = useState('auto/best-fast');
   const [autoExtraction, setAutoExtraction] = useState(true);
   const [autoCompletion, setAutoCompletion] = useState(true);
+  const [autoMemory, setAutoMemory] = useState(true);
+  const [autoSummary, setAutoSummary] = useState(true);
+  const [autoEmbeddings, setAutoEmbeddings] = useState(true);
 
   useEffect(() => {
     if (settings) {
@@ -49,8 +54,13 @@ export function SettingsModal({
       setOpenaiBaseUrl(settings.openai_base_url || '');
       setOllamaUrl(settings.ollama_url || 'http://localhost:11434');
       setOllamaModel(settings.ollama_model || 'llama3');
+      setOmnirouteBaseUrl(settings.omniroute_base_url || 'http://10.43.196.168:20128/v1');
+      setOmnirouteModel(settings.omniroute_model || 'auto/best-fast');
       setAutoExtraction(settings.auto_task_extraction ?? true);
       setAutoCompletion(settings.auto_task_completion ?? true);
+      setAutoMemory(settings.auto_memory_extraction ?? true);
+      setAutoSummary(settings.auto_summary ?? true);
+      setAutoEmbeddings(settings.auto_embeddings ?? true);
     }
   }, [settings, isOpen]);
 
@@ -67,8 +77,13 @@ export function SettingsModal({
       openai_base_url: openaiBaseUrl,
       ollama_url: ollamaUrl,
       ollama_model: ollamaModel,
+      omniroute_base_url: omnirouteBaseUrl,
+      omniroute_model: omnirouteModel,
       auto_task_extraction: autoExtraction,
       auto_task_completion: autoCompletion,
+      auto_memory_extraction: autoMemory,
+      auto_summary: autoSummary,
+      auto_embeddings: autoEmbeddings,
     });
     onClose();
   };
@@ -200,6 +215,7 @@ export function SettingsModal({
               className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium"
             >
               <option value="smart_heuristic">Tự động (Smart Heuristic Parser - Không cần API Key)</option>
+              <option value="omniroute">Omniroute Local (AI Gateway trong k3s - Mặc định)</option>
               <option value="gemini">Google Gemini AI (Gemini 2.5 Flash / 1.5 Flash)</option>
               <option value="openai">OpenAI (GPT-4o / GPT-4o-mini)</option>
               <option value="ollama">Ollama Local AI (Không gửi dữ liệu ra ngoài)</option>
@@ -253,6 +269,30 @@ export function SettingsModal({
               />
             </div>
           )}
+          {aiProvider === 'omniroute' && (
+            <div className="p-3 bg-violet-50/50 rounded-xl border border-violet-100 space-y-2">
+              <label className="block text-xs font-semibold text-violet-900">Base URL Omniroute (OpenAI-compatible)</label>
+              <input
+                type="text"
+                placeholder="http://10.43.196.168:20128/v1"
+                value={omnirouteBaseUrl}
+                onChange={(e) => setOmnirouteBaseUrl(e.target.value)}
+                className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-violet-500"
+              />
+              <label className="block text-xs font-semibold text-violet-900">Model</label>
+              <input
+                type="text"
+                placeholder="auto/best-fast"
+                value={omnirouteModel}
+                onChange={(e) => setOmnirouteModel(e.target.value)}
+                className="w-full px-3 py-1 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none"
+              />
+              <p className="text-[10px] text-violet-600/80 leading-relaxed">
+                Gateway LLM nội bộ trong k3s, không cần API key. Dữ liệu không rời khỏi máy.
+              </p>
+            </div>
+          )}
+
 
           {aiProvider === 'ollama' && (
             <div className="p-3 bg-slate-100 rounded-xl border border-slate-200 space-y-2">
@@ -298,6 +338,45 @@ export function SettingsModal({
                 type="checkbox"
                 checked={autoCompletion}
                 onChange={(e) => setAutoCompletion(e.target.checked)}
+                className="w-4 h-4 accent-blue-600 rounded focus:ring-blue-500"
+              />
+            </label>
+
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-xs font-bold text-slate-800 block">Trích xuất Ghi nhớ (Memories)</span>
+                <span className="text-[10px] text-slate-500 block">AI ghi nhớ email, công ty, sở thích… của khách hàng</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoMemory}
+                onChange={(e) => setAutoMemory(e.target.checked)}
+                className="w-4 h-4 accent-blue-600 rounded focus:ring-blue-500"
+              />
+            </label>
+
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-xs font-bold text-slate-800 block">Tóm tắt Hội thoại</span>
+                <span className="text-[10px] text-slate-500 block">Cập nhật tóm tắt, chủ đề mở và cảm xúc của từng cuộc trò chuyện</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoSummary}
+                onChange={(e) => setAutoSummary(e.target.checked)}
+                className="w-4 h-4 accent-blue-600 rounded focus:ring-blue-500"
+              />
+            </label>
+
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-xs font-bold text-slate-800 block">Tìm kiếm ngữ nghĩa</span>
+                <span className="text-[10px] text-slate-500 block">Vector hóa tin nhắn để tìm kiếm theo ý nghĩa, không chỉ từ khóa</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoEmbeddings}
+                onChange={(e) => setAutoEmbeddings(e.target.checked)}
                 className="w-4 h-4 accent-blue-600 rounded focus:ring-blue-500"
               />
             </label>

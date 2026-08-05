@@ -1,5 +1,6 @@
 import { dbQueries } from '@/lib/db/sqlite';
-import { AIProcessor } from '@/lib/ai/processor';
+import { drainOutbox } from '@/lib/events/bus';
+import { ensureWorkersRegistered } from '@/lib/workers';
 import { AIAnalysisResult, Message } from '@/types';
 
 export interface IncomingMessageInput {
@@ -18,8 +19,11 @@ export interface IncomingMessageResult {
 }
 
 /**
- * Persist an incoming/outgoing message, then run the AI auto-task pipeline
- * (extraction + completion) when either toggle is enabled.
+ * Persist an incoming/outgoing message, then publish `message.saved` so the
+ * independent AI workers (task, memory, summary, contact, embedding) run.
+ * The outbox is drained synchronously here so callers can rely on side
+ * effects being complete; workers never block ingestion (a failed worker
+ * leaves its event in the outbox for the next drain).
  */
 export async function handleIncomingMessage(input: IncomingMessageInput): Promise<IncomingMessageResult> {
   // Zalo can deliver the same msgId twice: echoes of our own sends (selfListen)
@@ -30,51 +34,28 @@ export async function handleIncomingMessage(input: IncomingMessageInput): Promis
   }
   const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
-  const message = dbQueries.addMessage({
-    id: msgId,
-    conversation_id: input.conversation_id,
-    zalo_msg_id: input.zalo_msg_id,
-    sender_id: input.sender_id,
-    sender_name: input.sender_name,
-    is_from_me: input.is_from_me,
-    content: input.content,
-    timestamp: input.timestamp,
-    ai_processed: false,
+  // Message + outbox event land atomically — no message without its event.
+  const message = dbQueries.withTransaction(() => {
+    const saved = dbQueries.addMessage({
+      id: msgId,
+      conversation_id: input.conversation_id,
+      zalo_msg_id: input.zalo_msg_id,
+      sender_id: input.sender_id,
+      sender_name: input.sender_name,
+      is_from_me: input.is_from_me,
+      content: input.content,
+      timestamp: input.timestamp,
+      ai_processed: false,
+    });
+    dbQueries.publishEvent('message.saved', {
+      message_id: saved.id,
+      conversation_id: input.conversation_id,
+    });
+    return saved;
   });
 
-  const settings = dbQueries.getSettings();
-  let aiResult: AIAnalysisResult | null = null;
+  ensureWorkersRegistered();
+  await drainOutbox();
 
-  if (settings.auto_task_extraction || settings.auto_task_completion) {
-    const messages = dbQueries.getMessagesByConversationId(input.conversation_id);
-    const pendingTasks = dbQueries.getTasks(input.conversation_id, 'pending');
-    aiResult = await AIProcessor.analyzeConversation(messages, pendingTasks, settings);
-
-    if (settings.auto_task_extraction && aiResult.newTasks.length > 0) {
-      for (const taskData of aiResult.newTasks) {
-        dbQueries.addTask({
-          conversation_id: input.conversation_id,
-          title: taskData.title,
-          description: taskData.description,
-          status: 'pending',
-          priority: taskData.priority,
-          deadline: taskData.deadline,
-          source_msg_id: taskData.source_msg_id || msgId,
-          source_msg_text: taskData.source_msg_text || input.content,
-          ai_created: true,
-          ai_completed: false,
-        });
-      }
-    }
-
-    if (settings.auto_task_completion && aiResult.completedTaskIds.length > 0) {
-      for (const item of aiResult.completedTaskIds) {
-        dbQueries.updateTaskStatus(item.task_id, 'completed', item.reason, true);
-      }
-    }
-
-    dbQueries.markMessagesProcessed([msgId]);
-  }
-
-  return { message, aiResult };
+  return { message, aiResult: null };
 }

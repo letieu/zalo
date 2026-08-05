@@ -1,6 +1,7 @@
 import { Message, Task, AIAnalysisResult, AppSettings, TaskPriority } from '@/types';
 import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
+import { chatJSON, OMNIROUTE_CODING_MODEL } from './llm';
 
 /**
  * Main AI Service to process chat messages, extract tasks, and detect completions.
@@ -14,7 +15,15 @@ export class AIProcessor {
     pendingTasks: Task[],
     settings: AppSettings
   ): Promise<AIAnalysisResult> {
-    const provider = settings.ai_provider || 'smart_heuristic';
+    const provider = settings.ai_provider || 'omniroute';
+
+    if (provider === 'omniroute' || (!settings.gemini_api_key && !settings.openai_api_key && provider !== 'smart_heuristic')) {
+      try {
+        return await this.analyzeWithOmniroute(messages, pendingTasks, settings);
+      } catch (err) {
+        console.error('Omniroute API error, falling back to heuristic engine:', err);
+      }
+    }
 
     if (provider === 'gemini' && settings.gemini_api_key) {
       try {
@@ -176,6 +185,27 @@ export class AIProcessor {
     const text = response.text || '';
     return this.parseLLMResponse(text);
   }
+  /**
+   * Analyze conversation using the local omniroute gateway (OpenAI-compatible).
+   */
+  private static async analyzeWithOmniroute(
+    messages: Message[],
+    pendingTasks: Task[],
+    settings: AppSettings
+  ): Promise<AIAnalysisResult> {
+    const prompt = this.buildLLMPrompt(messages, pendingTasks);
+    const raw = await chatJSON<Record<string, unknown>>(settings, {
+      system:
+        'Bạn là Trợ lý AI Quản lý Công việc từ Đoạn Chat Zalo. Phân tích hội thoại, ' +
+        'trích xuất công việc mới và nhận diện công việc đã hoàn thành. Trả về JSON đúng cấu trúc.',
+      user: prompt,
+      jsonShape: `{"newTasks": [{"title": "..."}], "completedTaskIds": [{"task_id": "..."}]}`,
+      model: OMNIROUTE_CODING_MODEL,
+    });
+    if (!raw) throw new Error('Omniroute returned no usable JSON');
+    return this.parseLLMResponse(JSON.stringify(raw));
+  }
+
 
   /**
    * Analyze conversation using OpenAI Chat API.
