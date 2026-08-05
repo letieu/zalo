@@ -1,0 +1,13 @@
+node_modules/
+.next/
+out/
+data/*.db
+data/*.db-*
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/zalo_credentials.json
+*.log
+.DS_Store
+
+*.tsbuildinfo
