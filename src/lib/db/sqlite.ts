@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { Conversation, Message, Task, AppSettings, Contact, Memory, Sentiment, OutboxEventType, OutboxEvent } from '@/types';
+import { Conversation, Message, Task, AppSettings, Contact, Memory, Sentiment, OutboxEventType, OutboxEvent, AssistantMessage, AssistantAction, AssistantActionResult } from '@/types';
 
 const dbDir = path.join(process.cwd(), 'data');
 // Test/ops hook: point the store at a temp file (vitest sets this).
@@ -123,6 +123,19 @@ export function initDB() {
       content TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    -- AI Assistant: the user's chat with the assistant (never auto-sent).
+    -- actions holds proposed actions (JSON), action_results holds confirmed
+    -- execution outcomes keyed by action id (idempotent).
+    CREATE TABLE IF NOT EXISTS assistant_messages (
+      id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      actions TEXT NOT NULL DEFAULT '[]',
+      action_results TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL
+    );
+
    `);
 
   migrateConversationColumns();
@@ -169,6 +182,7 @@ export function initDB() {
  */
 export function resetDatabase(): void {
   db.exec(`
+    DELETE FROM assistant_messages;
     DELETE FROM event_deliveries;
     DELETE FROM events;
     DELETE FROM message_embeddings;
@@ -1064,4 +1078,75 @@ export const dbQueries = {
     db.prepare('INSERT OR REPLACE INTO briefs (date, content, created_at) VALUES (?, ?, ?)')
       .run(date, content, new Date().toISOString());
   },
- };
+
+  // Recent cross-conversation activity (assistant context + future surfaces)
+  getRecentMessages: (limit = 15): Message[] => {
+    const rows = db.prepare('SELECT * FROM messages ORDER BY timestamp DESC LIMIT ?').all(limit) as DbMessageRow[];
+    return rows.map(rowToMessage).reverse();
+  },
+
+  getMessageConversationIds: (): string[] => {
+    const rows = db.prepare('SELECT DISTINCT conversation_id FROM messages').all() as Array<{ conversation_id: string }>;
+    return rows.map(r => r.conversation_id);
+  },
+
+  // ===== AI Assistant =====
+  getAssistantMessages: (limit = 50): AssistantMessage[] => {
+    const rows = db.prepare(
+      'SELECT * FROM (SELECT * FROM assistant_messages ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC'
+    ).all(limit) as Array<{
+      id: string; role: string; content: string; actions: string; action_results: string; created_at: string;
+    }>;
+    return rows.map(r => ({
+      id: r.id,
+      role: r.role as AssistantMessage['role'],
+      content: r.content,
+      actions: (JSON.parse(r.actions) as AssistantAction[]) || [],
+      action_results: (JSON.parse(r.action_results) as AssistantActionResult[]) || [],
+      created_at: r.created_at,
+    }));
+  },
+
+  getAssistantMessageById: (id: string): AssistantMessage | undefined => {
+    const row = db.prepare('SELECT * FROM assistant_messages WHERE id = ?').get(id) as {
+      id: string; role: string; content: string; actions: string; action_results: string; created_at: string;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      role: row.role as AssistantMessage['role'],
+      content: row.content,
+      actions: (JSON.parse(row.actions) as AssistantAction[]) || [],
+      action_results: (JSON.parse(row.action_results) as AssistantActionResult[]) || [],
+      created_at: row.created_at,
+    };
+  },
+
+  addAssistantMessage: (input: { role: 'user' | 'assistant'; content: string; actions?: AssistantAction[] }): AssistantMessage => {
+    const id = 'am_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    const last = db.prepare('SELECT created_at FROM assistant_messages ORDER BY created_at DESC LIMIT 1').get() as
+      | { created_at: string }
+      | undefined;
+    let created = new Date().toISOString();
+    if (last && last.created_at >= created) {
+      created = new Date(new Date(last.created_at).getTime() + 1).toISOString();
+    }
+    db.prepare(
+      'INSERT INTO assistant_messages (id, role, content, actions, action_results, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, input.role, input.content, JSON.stringify(input.actions ?? []), '[]', created);
+    return { id, role: input.role, content: input.content, actions: input.actions ?? [], action_results: [], created_at: created };
+  },
+
+  /** Attach an execution outcome to an assistant message. Idempotent per action id. */
+  attachAssistantActionResult: (messageId: string, result: AssistantActionResult): boolean => {
+    const existing = db.prepare('SELECT action_results FROM assistant_messages WHERE id = ?').get(messageId) as
+      | { action_results: string }
+      | undefined;
+    if (!existing) return false;
+    const results = (JSON.parse(existing.action_results) as AssistantActionResult[]).filter(r => r.id !== result.id);
+    results.push(result);
+    db.prepare('UPDATE assistant_messages SET action_results = ? WHERE id = ?')
+      .run(JSON.stringify(results), messageId);
+    return true;
+  },
+};

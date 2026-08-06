@@ -10,6 +10,8 @@ import { TaskPanel } from '@/components/TaskPanel';
 import { SettingsModal } from '@/components/SettingsModal';
 import { CustomerSimulatorDrawer } from '@/components/CustomerSimulatorDrawer';
 import { ZaloConnectModal } from '@/components/ZaloConnectModal';
+import { AssistantPanel } from '@/components/AssistantPanel';
+import { AssistantContext } from '@/types';
 
 interface ZaloStatusInfo {
   connected: boolean;
@@ -361,7 +363,28 @@ export default function Home() {
     }
   };
 
+  // Refresh every surface the AI assistant may have touched (messages,
+  // conversation list, tasks, dashboard) after a confirmed action runs.
+  const refreshAfterAssistantAction = useCallback(async () => {
+    fetchConversations();
+    if (activeConvId) {
+      fetchMessagesAndTasks(activeConvId);
+    }
+    if (view === 'tasks') {
+      fetchAllTasks();
+    }
+    fetchDashboard();
+  }, [fetchConversations, fetchMessagesAndTasks, fetchAllTasks, fetchDashboard, activeConvId, view]);
+
+
+
   const activeConversation = conversations.find(c => c.id === activeConvId) || null;
+
+  const assistantContext: AssistantContext = {
+    screen: view,
+    conversation_id: view === 'chats' && activeConvId ? activeConvId : undefined,
+    conversation_name: view === 'chats' ? activeConversation?.name : undefined,
+  };
 
   return (
     <main className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans antialiased text-slate-800">
@@ -479,8 +502,11 @@ export default function Home() {
       <ZaloConnectModal
         isOpen={isZaloConnectOpen}
         onClose={() => setIsZaloConnectOpen(false)}
+
         onConnected={handleZaloConnected}
       />
+
+      <AssistantPanel context={assistantContext} onDataChanged={refreshAfterAssistantAction} />
     </main>
   );
 }

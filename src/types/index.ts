@@ -212,3 +212,41 @@ export interface SearchHit {
   category?: MemoryCategory;
   score: number;
 }
+
+
+// ===== AI Assistant (Trợ lý AI) =====
+
+/** The UI state injected into every assistant turn. */
+export interface AssistantContext {
+  screen: 'dashboard' | 'chats' | 'tasks';
+  conversation_id?: string;
+  conversation_name?: string;
+}
+
+/** A concrete action the assistant proposes; the user confirms before execution. */
+export interface AssistantAction {
+  id: string;
+  type: 'send_message';
+  conversation_id: string;
+  conversation_name?: string;
+  content: string;
+  reason?: string;
+}
+
+export interface AssistantActionResult {
+  id: string;
+  ok: boolean;
+  sent: boolean;
+  via_zalo: boolean;
+  message_id?: string;
+  error?: string;
+}
+
+export interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  actions: AssistantAction[];
+  action_results: AssistantActionResult[];
+  created_at: string;
+}

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dbQueries } from '@/lib/db/sqlite';
-import { handleIncomingMessage } from '@/lib/ai/pipeline';
-import { getZaloManager } from '@/lib/zalo/zalo-manager';
+import { sendOutgoingMessage } from '@/lib/zalo/send';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -33,42 +32,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'conversation_id and content are required' }, { status: 400 });
     }
 
-    const settings = dbQueries.getSettings();
-    let zaloMsgId = 'zm_' + Date.now();
-
-    // Real Zalo mode: deliver the message through the live connection first
-    if (settings.zalo_mode === 'personal') {
-      const conversation = dbQueries.getConversationById(body.conversation_id);
-      if (!conversation || !conversation.zalo_thread_id) {
-        return NextResponse.json({ error: 'Cuộc trò chuyện này không có thread Zalo' }, { status: 400 });
-      }
-
-      const manager = getZaloManager();
-      if (!manager.isConnected()) {
-        return NextResponse.json(
-          { error: 'Zalo chưa kết nối. Vào Cài đặt → Zalo Cá Nhân → Đăng nhập bằng QR để kết nối.' },
-          { status: 409 }
-        );
-      }
-
-      const sentMsgId = await manager.sendTextMessage(conversation.zalo_thread_id, conversation.type, body.content);
-      if (!sentMsgId) {
-        return NextResponse.json({ error: 'Zalo không xác nhận tin nhắn đã gửi. Hãy thử lại.' }, { status: 502 });
-      }
-      zaloMsgId = sentMsgId;
+    const result = await sendOutgoingMessage(body.conversation_id, body.content);
+    if (!result.ok || !result.message) {
+      const status = result.error?.startsWith('Zalo chưa kết nối') ? 409
+        : result.error?.includes('không xác nhận') ? 502
+        : 400;
+      return NextResponse.json({ error: result.error ?? 'Failed to send message' }, { status });
     }
 
-    const { message, aiResult } = await handleIncomingMessage({
-      conversation_id: body.conversation_id,
-      zalo_msg_id: zaloMsgId,
-      sender_id: 'me',
-      sender_name: body.sender_name || 'Tôi',
-      is_from_me: true,
-      content: body.content,
-      timestamp: new Date().toISOString(),
-    });
-
-    return NextResponse.json({ message, aiResult });
+    return NextResponse.json({ message: result.message, aiResult: null });
   } catch (error) {
     console.error('Error posting message:', error);
     return NextResponse.json({ error: 'Failed to send message' }, { status: 500 });
