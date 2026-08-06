@@ -144,3 +144,63 @@ describe('handleIncomingMessage (outbox-driven ingestion)', () => {
     expect(dbQueries.getConversationById(conv.id)?.summary).toBeUndefined();
   });
 });
+
+describe('task worker — one task per issue (no duplicate follow-ups)', () => {
+  beforeEach(() => {
+    // Heuristic engine: deterministic, no LLM network calls.
+    dbQueries.updateSettings({ ...noLLM, auto_task_extraction: true, ai_provider: 'smart_heuristic' });
+  });
+
+  it('merges the agent follow-up into the complaint task instead of creating a second', async () => {
+    const conv = freshConv();
+    const t0 = Date.now();
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_follow_1',
+      sender_id: 'c1',
+      sender_name: 'Khách',
+      is_from_me: false,
+      content: 'Báo hóa đơn không hiển thị, em kiểm tra giúp anh nhé',
+      timestamp: new Date(t0).toISOString(),
+    });
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_follow_2',
+      sender_id: 'me',
+      sender_name: 'Tôi',
+      is_from_me: true,
+      content: 'dạ để em check rồi em thêm lại ạ',
+      timestamp: new Date(t0 + 60_000).toISOString(),
+    });
+
+    const tasks = dbQueries.getTasks(conv.id, 'pending');
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].description).toContain('em thêm lại');
+  });
+
+  it('still creates a second task for a genuinely different request', async () => {
+    const conv = freshConv();
+    const t0 = Date.now();
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_two_1',
+      sender_id: 'c1',
+      sender_name: 'Khách',
+      is_from_me: false,
+      content: 'Báo hóa đơn không hiển thị, em kiểm tra giúp anh nhé',
+      timestamp: new Date(t0).toISOString(),
+    });
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_two_2',
+      sender_id: 'c2',
+      sender_name: 'Chị Lan',
+      is_from_me: false,
+      content: 'Gửi báo giá 5 bộ máy tính Dell trước 4h chiều nay nhé',
+      timestamp: new Date(t0 + 60_000).toISOString(),
+    });
+
+    const tasks = dbQueries.getTasks(conv.id, 'pending');
+    expect(tasks).toHaveLength(2);
+  });
+});

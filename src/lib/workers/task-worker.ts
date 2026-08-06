@@ -1,6 +1,7 @@
 import { registerWorker } from '@/lib/events/bus';
 import { dbQueries } from '@/lib/db/sqlite';
 import { AIProcessor } from '@/lib/ai/processor';
+import { findMergeTarget, mergeTaskContext } from '@/lib/ai/task-dedup';
 import { OutboxEvent } from '@/types';
 
 /**
@@ -28,6 +29,14 @@ async function handleMessageSaved(event: OutboxEvent): Promise<void> {
     for (const taskData of result.newTasks) {
       const sourceId = taskData.source_msg_id || messageId;
       if (sourceIds.has(sourceId)) continue;
+      // Follow-ups of an already-open task merge into it (one task per issue)
+      // instead of creating a duplicate.
+      const mergeTarget = findMergeTarget(taskData, messages, pendingTasks);
+      if (mergeTarget) {
+        dbQueries.updateTask(mergeTarget.id, mergeTaskContext(mergeTarget, taskData));
+        sourceIds.add(sourceId);
+        continue;
+      }
       dbQueries.addTask({
         conversation_id: conversationId,
         title: taskData.title,

@@ -276,6 +276,7 @@ export class AIProcessor {
 Nhiệm vụ của bạn:
 1. Đọc lịch sử trò chuyện và xác định các CÔNG VIỆC MỚI (yêu cầu báo giá, giao hàng, chỉnh sửa file, hẹn thời gian, gửi tài liệu, v.v.).
 2. Kiểm tra danh sách CÔNG VIỆC ĐANG CHỜ và xác định nếu có tin nhắn mới nào XÁC NHẬN CÔNG VIỆC ĐÃ HOÀN THÀNH (ví dụ: đã gửi file, đã giao hàng, đã thanh toán, khách xác nhận đã nhận).
+3. Nếu tin nhắn mới chỉ là PHẢN HỒI hoặc BỔ SUNG cho một CÔNG VIỆC ĐANG CHỜ đã có (cùng vấn đề, cùng khách hàng, cùng hội thoại — ví dụ: khách phàn nàn đã tạo task, sau đó phía mình trả lời "để em check"), TUYỆT ĐỐI KHÔNG tạo công việc mới — trả về "newTasks": []. Chỉ tạo công việc mới khi nội dung là một yêu cầu hoàn toàn khác chưa được bao phủ.
 
 LỊCH SỬ TIN NHẮN CHAT:
 ${chatHistory || '(Không có tin nhắn)'}
