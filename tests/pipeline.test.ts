@@ -127,6 +127,24 @@ describe('handleIncomingMessage (outbox-driven ingestion)', () => {
     expect(emb!.length).toBe(384);
   });
 
+  it('persists and re-reads a structured attachment on the message', async () => {
+    const conv = freshConv();
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_att_1',
+      sender_id: 'c1',
+      sender_name: 'Khách',
+      is_from_me: false,
+      content: '[Ảnh]',
+      attachment: { kind: 'image', url: 'https://zalo/x.jpg', thumb: 'https://zalo/t.jpg', name: 'a.jpg' },
+      timestamp: new Date().toISOString(),
+    });
+
+    const messages = dbQueries.getMessagesByConversationId(conv.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].attachment).toMatchObject({ kind: 'image', url: 'https://zalo/x.jpg', name: 'a.jpg' });
+  });
+
   it('disabled workers produce no tasks, memories, summaries', async () => {
     const conv = freshConv();
     const memBefore = dbQueries.getMemories(999).length;
@@ -202,5 +220,32 @@ describe('task worker — one task per issue (no duplicate follow-ups)', () => {
 
     const tasks = dbQueries.getTasks(conv.id, 'pending');
     expect(tasks).toHaveLength(2);
+  });
+
+  it('keeps identical requests from two different people as separate tasks (group chat)', async () => {
+    const conv = freshConv();
+    const t0 = Date.now();
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_grp_1',
+      sender_id: 'u1',
+      sender_name: 'Trang Moon',
+      is_from_me: false,
+      content: 'Nhờ em làm hộ tài khoản 1395 ngày nhé',
+      timestamp: new Date(t0).toISOString(),
+    });
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_grp_2',
+      sender_id: 'u2',
+      sender_name: 'Thảo Vân',
+      is_from_me: false,
+      content: 'Nhờ em làm hộ tài khoản 1395 ngày nhé',
+      timestamp: new Date(t0 + 60_000).toISOString(),
+    });
+
+    const tasks = dbQueries.getTasks(conv.id, 'pending');
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map(t => t.requester).sort()).toEqual(['Thảo Vân', 'Trang Moon']);
   });
 });

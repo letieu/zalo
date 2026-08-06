@@ -20,22 +20,30 @@ import {
 interface TaskPanelProps {
   tasks: Task[];
   conversationName?: string;
+  /** Combined view across all conversations — shows conversation + person,
+   *  disables manual add. */
+  globalMode?: boolean;
   onToggleTaskStatus: (taskId: string, currentStatus: TaskStatus) => void;
   onAddTask: (task: { title: string; description?: string; priority?: TaskPriority; deadline?: string }) => void;
   onDeleteTask: (taskId: string) => void;
   onClose?: () => void;
+  onOpenConversation?: (conversationId: string) => void;
 }
 
 export function TaskPanel({
   tasks,
   conversationName,
+  globalMode = false,
   onToggleTaskStatus,
   onAddTask,
   onDeleteTask,
   onClose,
+  onOpenConversation,
 }: TaskPanelProps) {
   const [filter, setFilter] = useState<'pending' | 'completed' | 'all'>('pending');
+  const [personFilter, setPersonFilter] = useState<string>('all');
   const [isAdding, setIsAdding] = useState(false);
+
 
   // New task form state
   const [newTitle, setNewTitle] = useState('');
@@ -47,7 +55,11 @@ export function TaskPanel({
     if (filter === 'pending') return t.status === 'pending' || t.status === 'in_progress';
     if (filter === 'completed') return t.status === 'completed';
     return true;
-  });
+  }).filter((t) => !globalMode || personFilter === 'all' || (t.assignee || '') === personFilter);
+
+  const people = globalMode
+    ? Array.from(new Set(tasks.map(t => t.assignee).filter(Boolean) as string[])).sort()
+    : [];
 
   const pendingCount = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress').length;
   const completedCount = tasks.filter(t => t.status === 'completed').length;
@@ -76,24 +88,28 @@ export function TaskPanel({
             <ListTodo className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Danh sách Công việc AI</h2>
+            <h2 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
+              {globalMode ? 'Tất cả việc cần làm' : 'Danh sách Công việc AI'}
+            </h2>
             <p className="text-[10px] text-slate-500 truncate max-w-[170px]">
-              {conversationName ? `Hội thoại: ${conversationName}` : 'Tất cả công việc'}
+              {globalMode ? 'Tổng hợp mọi hội thoại' : conversationName ? `Hội thoại: ${conversationName}` : 'Tất cả công việc'}
             </p>
           </div>
         </div>
 
-        <button
-          onClick={() => setIsAdding(!isAdding)}
-          className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 active:bg-blue-200 rounded-md transition text-xs font-semibold flex items-center gap-1"
-          title="Tạo việc thủ công"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
+        {!globalMode && (
+          <button
+            onClick={() => setIsAdding(!isAdding)}
+            className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 active:bg-blue-200 rounded-md transition text-xs font-semibold flex items-center gap-1"
+            title="Tạo việc thủ công"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {/* Manual Task Add Form (Collapsible) */}
-      {isAdding && (
+      {!globalMode && isAdding && (
         <form onSubmit={handleCreateTask} className="p-3 bg-blue-50/50 border-b border-blue-100 space-y-2">
           <div className="flex justify-between items-center mb-1">
             <span className="text-xs font-bold text-blue-900">Thêm việc mới</span>
@@ -176,6 +192,31 @@ export function TaskPanel({
         </button>
       </div>
 
+      {/* Person Filter (global mode only) */}
+      {globalMode && people.length > 0 && (
+        <div className="flex gap-1 overflow-x-auto border-b border-slate-200/60 bg-white/50 p-1.5 text-xs">
+          <button
+            onClick={() => setPersonFilter('all')}
+            className={`px-2 py-1 rounded-md font-medium whitespace-nowrap transition ${
+              personFilter === 'all' ? 'bg-indigo-100 text-indigo-800 font-semibold' : 'text-slate-500 hover:bg-slate-100'
+            }`}
+          >
+            Tất cả mọi người
+          </button>
+          {people.map((p) => (
+            <button
+              key={p}
+              onClick={() => setPersonFilter(p)}
+              className={`px-2 py-1 rounded-md font-medium whitespace-nowrap transition ${
+                personFilter === p ? 'bg-indigo-100 text-indigo-800 font-semibold' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Task List */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
         {filteredTasks.length === 0 ? (
@@ -245,7 +286,33 @@ export function TaskPanel({
                         </span>
                       )}
 
-                      {/* AI Created Tag */}
+                      {/* Requester (who asked) */}
+                      {t.requester && (
+                        <span className="text-[10px] text-sky-700 bg-sky-50 border border-sky-100 px-1.5 py-0.5 rounded">
+                          Từ: {t.requester}
+                        </span>
+                      )}
+
+                      {/* Assignee (who must do it) */}
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
+                        !t.assignee || t.assignee === 'Tôi'
+                          ? 'text-emerald-700 bg-emerald-50 border border-emerald-100'
+                          : 'text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-100'
+                      }`}>
+                        {t.assignee === 'Tôi' || !t.assignee ? 'Làm: Tôi' : `Làm: ${t.assignee}`}
+                      </span>
+
+                      {/* Conversation (global mode only) */}
+                      {globalMode && t.conversation_id && (
+                        <button
+                          onClick={() => onOpenConversation?.(t.conversation_id)}
+                          className="text-[10px] text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 px-1.5 py-0.5 rounded flex items-center gap-1 transition"
+                          title="Mở hội thoại"
+                        >
+                          <MessageCircle className="w-2.5 h-2.5 text-slate-400" />
+                          {t.conversation_name || 'Hội thoại'}
+                        </button>
+                      )}
                       {t.ai_created && (
                         <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded flex items-center gap-0.5">
                           <Sparkles className="w-2.5 h-2.5 text-indigo-600" />

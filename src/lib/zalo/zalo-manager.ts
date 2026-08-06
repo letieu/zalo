@@ -5,6 +5,7 @@ import { API, Credentials, Message, LoginQRCallbackEvent } from 'zca-js';
 import { dbQueries } from '@/lib/db/sqlite';
 import { handleIncomingMessage } from '@/lib/ai/pipeline';
 import { Conversation } from '@/types';
+import { parseZaloContent } from '@/lib/zalo/attachments';
 
 export interface ZaloUserInfo {
   uid: string;
@@ -249,7 +250,10 @@ export class ZaloManager {
   private async onZaloMessage(message: Message): Promise<void> {
     try {
       const data = message.data;
-      if (typeof data.content !== 'string' || data.content === '') return;
+      // Media/file messages arrive as JSON strings or objects; parse them into
+      // display text + a structured attachment so the UI can render them.
+      const { text, attachment } = parseZaloContent(data.content, data.msgType);
+      if (!text && !attachment) return;
 
       const isGroup = message.type === ThreadType.Group;
       const threadType: 'individual' | 'group' = isGroup ? 'group' : 'individual';
@@ -265,7 +269,8 @@ export class ZaloManager {
         sender_id: message.isSelf ? 'me' : data.uidFrom,
         sender_name: message.isSelf ? 'Tôi' : data.dName || conversation.name,
         is_from_me: message.isSelf,
-        content: data.content,
+        content: text,
+        attachment,
         timestamp,
       });
     } catch (err) {

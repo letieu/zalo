@@ -126,6 +126,8 @@ export function initDB() {
    `);
 
   migrateConversationColumns();
+  migrateMessageColumns();
+  migrateTaskColumns();
 
   const defaultSettings: Record<string, string> = {
     zalo_mode: 'mock',
@@ -200,6 +202,28 @@ function migrateConversationColumns() {
   for (const [name, def] of additions) {
     if (!cols.has(name)) {
       db.exec(`ALTER TABLE conversations ADD COLUMN ${name} ${def}`);
+    }
+  }
+}
+
+/** v2 → v3: messages carry parsed Zalo attachments (JSON). */
+function migrateMessageColumns() {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>).map(c => c.name)
+  );
+  if (!cols.has('attachment')) {
+    db.exec('ALTER TABLE messages ADD COLUMN attachment TEXT');
+  }
+}
+
+/** v2 → v3: tasks distinguish who asked (requester) from who must do it (assignee). */
+function migrateTaskColumns() {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>).map(c => c.name)
+  );
+  for (const [name, def] of [['requester', 'TEXT'], ['assignee', 'TEXT']] as Array<[string, string]>) {
+    if (!cols.has(name)) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${def}`);
     }
   }
 }
@@ -354,8 +378,8 @@ function seedMockData() {
 
   // Seed Tasks
   const insertTask = db.prepare(`
-    INSERT INTO tasks (id, conversation_id, title, description, status, priority, deadline, source_msg_id, source_msg_text, ai_created, ai_completed, completion_reason, created_at, completed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO tasks (id, conversation_id, title, description, requester, assignee, status, priority, deadline, source_msg_id, source_msg_text, ai_created, ai_completed, completion_reason, created_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Task 1 (Conv 1 - Pending)
@@ -364,6 +388,8 @@ function seedMockData() {
     conv1Id,
     'Gửi báo giá 5 bộ máy tính Dell cho Anh Tuấn',
     'Gửi sang email tuan@tinhoca.com',
+    'Anh Tuấn',
+    'Tôi',
     'pending',
     'high',
     'Hôm nay - 16:00',
@@ -382,6 +408,8 @@ function seedMockData() {
     conv2Id,
     'Cập nhật địa chỉ giao hàng đơn Chị Mai',
     'Đổi sang 123 Nguyễn Trãi, Q.5 (SĐT: 0912987654)',
+    'Chị Mai',
+    'Tôi',
     'pending',
     'medium',
     'Trong ngày',
@@ -400,6 +428,8 @@ function seedMockData() {
     conv3Id,
     'Chỉnh sửa banner Tết (lệch logo, đổi màu đỏ)',
     'Yêu cầu Đức Designer sửa logo và tông màu banner',
+    'Tôi',
+    'Đức',
     'completed',
     'medium',
     null,
@@ -461,6 +491,7 @@ interface DbMessageRow {
   sender_name: string;
   is_from_me: number;
   content: string;
+  attachment?: string;
   timestamp: string;
   ai_processed: number;
 }
@@ -470,6 +501,8 @@ interface DbTaskRow {
   conversation_id: string;
   title: string;
   description?: string;
+  requester?: string;
+  assignee?: string;
   status: string;
   priority: string;
   deadline?: string;
@@ -481,6 +514,16 @@ interface DbTaskRow {
   created_at: string;
   completed_at?: string;
   conversation_name?: string;
+}
+
+/** Map a messages row to the app Message, parsing the stored attachment JSON. */
+function rowToMessage(row: DbMessageRow): Message {
+  return {
+    ...row,
+    is_from_me: Boolean(row.is_from_me),
+    ai_processed: Boolean(row.ai_processed),
+    attachment: row.attachment ? (JSON.parse(row.attachment) as Message['attachment']) : null,
+  };
 }
 
 interface DbContactRow {
@@ -623,23 +666,34 @@ export const dbQueries = {
   getMessagesByConversationId: (conversationId: string): Message[] => {
     const stmt = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC');
     const rows = stmt.all(conversationId) as DbMessageRow[];
-    return rows.map(r => ({ ...r, is_from_me: Boolean(r.is_from_me), ai_processed: Boolean(r.ai_processed) }));
+    return rows.map(rowToMessage);
   },
-
+ 
   getMessageByZaloMsgId: (zaloMsgId: string): Message | undefined => {
     const row = db.prepare('SELECT * FROM messages WHERE zalo_msg_id = ?').get(zaloMsgId) as DbMessageRow | undefined;
     if (!row) return undefined;
-    return { ...row, is_from_me: Boolean(row.is_from_me), ai_processed: Boolean(row.ai_processed) };
+    return rowToMessage(row);
   },
 
   addMessage: (msg: Omit<Message, 'ai_processed'> & { ai_processed?: boolean }): Message => {
     const stmt = db.prepare(`
-      INSERT INTO messages (id, conversation_id, zalo_msg_id, sender_id, sender_name, is_from_me, content, timestamp, ai_processed)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO messages (id, conversation_id, zalo_msg_id, sender_id, sender_name, is_from_me, content, attachment, timestamp, ai_processed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const isFromMeInt = msg.is_from_me ? 1 : 0;
     const aiProcessedInt = msg.ai_processed ? 1 : 0;
-    stmt.run(msg.id, msg.conversation_id, msg.zalo_msg_id, msg.sender_id, msg.sender_name, isFromMeInt, msg.content, msg.timestamp, aiProcessedInt);
+    stmt.run(
+      msg.id,
+      msg.conversation_id,
+      msg.zalo_msg_id,
+      msg.sender_id,
+      msg.sender_name,
+      isFromMeInt,
+      msg.content,
+      msg.attachment ? JSON.stringify(msg.attachment) : null,
+      msg.timestamp,
+      aiProcessedInt
+    );
 
     // Update conversation last message
     dbQueries.updateConversationLastMsg(msg.conversation_id, msg.content, msg.timestamp, msg.is_from_me);
@@ -694,8 +748,8 @@ export const dbQueries = {
     const id = 'task_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
     const createdAt = new Date().toISOString();
     const stmt = db.prepare(`
-      INSERT INTO tasks (id, conversation_id, title, description, status, priority, deadline, source_msg_id, source_msg_text, ai_created, ai_completed, completion_reason, created_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, conversation_id, title, description, requester, assignee, status, priority, deadline, source_msg_id, source_msg_text, ai_created, ai_completed, completion_reason, created_at, completed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -703,6 +757,8 @@ export const dbQueries = {
       task.conversation_id,
       task.title,
       task.description || '',
+      task.requester || null,
+      task.assignee || null,
       task.status || 'pending',
       task.priority || 'medium',
       task.deadline || null,
@@ -751,6 +807,8 @@ export const dbQueries = {
     if (updates.description !== undefined) { fields.push('description = ?'); params.push(updates.description); }
     if (updates.priority !== undefined) { fields.push('priority = ?'); params.push(updates.priority); }
     if (updates.deadline !== undefined) { fields.push('deadline = ?'); params.push(updates.deadline); }
+    if (updates.requester !== undefined) { fields.push('requester = ?'); params.push(updates.requester); }
+    if (updates.assignee !== undefined) { fields.push('assignee = ?'); params.push(updates.assignee); }
     if (updates.status !== undefined) {
       fields.push('status = ?');
       params.push(updates.status);
@@ -968,7 +1026,7 @@ export const dbQueries = {
   getMessageById: (id: string): Message | undefined => {
     const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined;
     if (!row) return undefined;
-    return { ...row, is_from_me: Boolean(row.is_from_me), ai_processed: Boolean(row.ai_processed) };
+    return rowToMessage(row);
   },
 
   // Embeddings (local vectors; identical contract to pgvector later)
@@ -991,7 +1049,7 @@ export const dbQueries = {
       INNER JOIN message_embeddings e ON e.message_id = m.id
     `).all() as Array<DbMessageRow & { embedding: string }>;
     return rows.map(r => ({
-      message: { ...r, is_from_me: Boolean(r.is_from_me), ai_processed: Boolean(r.ai_processed) },
+      message: rowToMessage(r),
       embedding: JSON.parse(r.embedding) as number[],
     }));
   },

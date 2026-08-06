@@ -48,6 +48,10 @@ export function titleSimilarity(a: string, b: string): number {
 export interface NewTaskCandidate {
   title: string;
   description?: string;
+  /** Who asked (deterministic: source message sender; 'Tôi' when from_me). */
+  requester?: string;
+  /** Who must do it (AI-extracted; defaults to 'Tôi'). */
+  assignee?: string;
   priority: TaskPriority;
   deadline?: string;
   source_msg_id?: string;
@@ -67,9 +71,14 @@ export function findMergeTarget(
 
   // Rule 1: title-level overlap (catches LLM paraphrases, e.g. the second
   // task "Kiểm tra và thêm lại hóa đơn liên quan" vs the first
-  // "Xử lý hóa đơn liên quan không hiển thị" → Dice 0.62).
+  // "Xử lý hóa đơn liên quan không hiển thị" → Dice 0.62). The requester and
+  // assignee MUST match (when known on both sides) — two different people
+  // asking for "the same" thing in a group chat are separate tasks.
   for (const t of pendingTasks) {
-    if (titleSimilarity(t.title, newTask.title) >= MERGE_SIMILARITY_THRESHOLD) return t;
+    if (titleSimilarity(t.title, newTask.title) < MERGE_SIMILARITY_THRESHOLD) continue;
+    if (newTask.requester && t.requester && newTask.requester !== t.requester) continue;
+    if (newTask.assignee && t.assignee && newTask.assignee !== t.assignee) continue;
+    return t;
   }
 
   // Rule 2: the new task was born from the agent's reply to a customer
@@ -97,6 +106,12 @@ export function mergeTaskContext(existing: Task, followUp: NewTaskCandidate): Pa
   const rank: Record<TaskPriority, number> = { low: 0, medium: 1, high: 2 };
   if (rank[followUp.priority] > rank[existing.priority]) {
     updates.priority = followUp.priority;
+  }
+  if (!existing.assignee && followUp.assignee) {
+    updates.assignee = followUp.assignee;
+  }
+  if (!existing.requester && followUp.requester) {
+    updates.requester = followUp.requester;
   }
   return updates;
 }

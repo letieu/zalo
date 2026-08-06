@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Conversation, Message, Task, AppSettings, TaskStatus, TaskPriority, DashboardData } from '@/types';
+import { Conversation, Message, Task, MessageAttachment, AppSettings, TaskStatus, TaskPriority, DashboardData } from '@/types';
 import { Sidebar } from '@/components/Sidebar';
-import { LayoutDashboard, MessageSquareText } from 'lucide-react';
+import { LayoutDashboard, MessageSquareText, ListTodo } from 'lucide-react';
 import DashboardView from '@/components/DashboardView';
 import { ChatWindow } from '@/components/ChatWindow';
 import { TaskPanel } from '@/components/TaskPanel';
@@ -24,6 +24,7 @@ export default function Home() {
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<AppSettings>({
     zalo_mode: 'mock',
     ai_provider: 'omniroute',
@@ -39,7 +40,7 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [view, setView] = useState<'dashboard' | 'chats'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'chats' | 'tasks'>('dashboard');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [zaloStatus, setZaloStatus] = useState<ZaloStatusInfo | null>(null);
@@ -99,6 +100,15 @@ export default function Home() {
     }
   }, []);
 
+  const fetchAllTasks = useCallback(async () => {
+    try {
+      const res = await fetch('/api/tasks');
+      const data = await res.json();
+      if (data.tasks) setAllTasks(data.tasks);
+    } catch (err) {
+      console.error('Failed to fetch all tasks:', err);
+    }
+  }, []);
 
   const handleSwitchToZalo = useCallback(async () => {
     try {
@@ -167,6 +177,10 @@ export default function Home() {
   }, [settings.zalo_mode, zaloStatus?.connected, fetchConversations, fetchMessagesAndTasks, activeConvId]);
 
   useEffect(() => {
+    if (view === 'tasks') fetchAllTasks();
+  }, [view, fetchAllTasks]);
+
+  useEffect(() => {
     if (activeConvId) {
       fetchMessagesAndTasks(activeConvId);
     }
@@ -230,7 +244,7 @@ export default function Home() {
   }, [sendError]);
 
   // Handle Simulate Customer Message (Incoming)
-  const handleSimulateCustomerMessage = async (convId: string, content: string) => {
+  const handleSimulateCustomerMessage = async (convId: string, content: string, attachment?: MessageAttachment) => {
     try {
       const res = await fetch('/api/mock/send-customer-msg', {
         method: 'POST',
@@ -238,6 +252,7 @@ export default function Home() {
         body: JSON.stringify({
           conversation_id: convId,
           content,
+          attachment: attachment ?? null,
         }),
       });
 
@@ -386,9 +401,27 @@ export default function Home() {
           >
             <MessageSquareText className="h-4 w-4" /> Trò chuyện
           </button>
+          <button
+            onClick={() => setView('tasks')}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              view === 'tasks' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'
+            }`}
+          >
+            <ListTodo className="h-4 w-4" /> Tất cả việc cần làm
+          </button>
         </nav>
 
-        {view === 'dashboard' ? (
+        {view === 'tasks' ? (
+          <TaskPanel
+            tasks={allTasks}
+            globalMode
+            onToggleTaskStatus={handleToggleTaskStatus}
+            onAddTask={handleAddTask}
+            onDeleteTask={handleDeleteTask}
+            onClose={() => setIsTaskPanelOpen(false)}
+            onOpenConversation={openConversationFromDashboard}
+          />
+        ) : view === 'dashboard' ? (
           <DashboardView
             data={dashboardData}
             loading={dashboardLoading}

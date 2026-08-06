@@ -118,6 +118,46 @@ describe('findMergeTarget', () => {
     expect(target).toBeUndefined();
   });
 
+  it('rule 1: merges when requester and assignee match on both sides', () => {
+    const open = task({ requester: 'Trang Moon', assignee: 'Tôi', title: 'Gia hạn hộ tài khoản 1395 ngày' });
+    const target = findMergeTarget(
+      candidate({ title: 'Gia hạn hộ tài khoản 1395 ngày', requester: 'Trang Moon', assignee: 'Tôi' }),
+      [msg({ id: 'm1' })],
+      [open]
+    );
+    expect(target?.id).toBe(open.id);
+  });
+
+  it('rule 1: keeps separate tasks when requesters differ (group chat)', () => {
+    const open = task({ requester: 'Trang Moon', assignee: 'Tôi', title: 'Gia hạn hộ tài khoản 1395 ngày' });
+    const target = findMergeTarget(
+      candidate({ title: 'Gia hạn hộ tài khoản 1395 ngày', requester: 'Thảo Vân', assignee: 'Tôi' }),
+      [msg({ id: 'm1' })],
+      [open]
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it('rule 1: keeps separate tasks when assignees differ', () => {
+    const open = task({ requester: 'Khách', assignee: 'Tôi', title: 'Báo giá 10 bàn phím' });
+    const target = findMergeTarget(
+      candidate({ title: 'Báo giá 10 bàn phím', requester: 'Khách', assignee: 'Đức' }),
+      [msg({ id: 'm1' })],
+      [open]
+    );
+    expect(target).toBeUndefined();
+  });
+
+  it('rule 1: merges when requester/assignee unknown on one side', () => {
+    const open = task({ requester: 'Khách', title: 'Báo giá 10 bàn phím' });
+    const target = findMergeTarget(
+      candidate({ title: 'Báo giá 10 bàn phím', requester: 'Khách', assignee: 'Tôi' }),
+      [msg({ id: 'm1' })],
+      [open]
+    );
+    expect(target?.id).toBe(open.id);
+  });
+
   it('returns undefined when there are no open tasks', () => {
     expect(findMergeTarget(candidate(), [msg({ id: 'm1' })], [])).toBeUndefined();
   });
@@ -143,5 +183,22 @@ describe('mergeTaskContext', () => {
     const updates = mergeTaskContext(existing, candidate({ priority: 'low', deadline: 'tuần sau' }));
     expect(updates.priority).toBeUndefined();
     expect(updates.deadline).toBeUndefined();
+  });
+
+  it('fills a missing assignee/requester from the follow-up', () => {
+    const existing = task();
+    const updates = mergeTaskContext(
+      existing,
+      candidate({ requester: 'Thảo Vân', assignee: 'Tôi', source_msg_text: 'nhờ check giúp' })
+    );
+    expect(updates.requester).toBe('Thảo Vân');
+    expect(updates.assignee).toBe('Tôi');
+  });
+
+  it('does not overwrite an existing assignee/requester', () => {
+    const existing = task({ requester: 'Khách', assignee: 'Đức' });
+    const updates = mergeTaskContext(existing, candidate({ requester: 'Tôi', assignee: 'Tôi' }));
+    expect(updates.requester).toBeUndefined();
+    expect(updates.assignee).toBeUndefined();
   });
 });

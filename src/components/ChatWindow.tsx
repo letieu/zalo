@@ -1,7 +1,6 @@
 'use client';
-
 import { useState, useRef, useEffect } from 'react';
-import { Conversation, Message, Task, ZaloMode } from '@/types';
+import { Conversation, Message, MessageAttachment, Task, ZaloMode } from '@/types';
 import { Send, Phone, User, Sparkles, CheckCircle, ListTodo, PanelRightOpen, PanelRightClose } from 'lucide-react';
 
 interface ChatWindowProps {
@@ -16,6 +15,77 @@ interface ChatWindowProps {
   isAnalyzing: boolean;
   composerError?: string | null;
   onClearComposerError?: () => void;
+}
+/** Renders a parsed Zalo media/file attachment inside a message bubble. */
+function AttachmentMedia({ attachment }: { attachment: MessageAttachment }) {
+  if (attachment.kind === 'image' || attachment.kind === 'gif') {
+    const src = attachment.thumb || attachment.url;
+    return src ? (
+      <a href={attachment.url || src} target="_blank" rel="noreferrer">
+        <img
+          src={src}
+          alt={attachment.name || 'Hình ảnh'}
+          className="max-h-56 rounded-lg object-cover border border-black/5 mb-1.5 cursor-pointer hover:opacity-95 transition"
+        />
+      </a>
+    ) : null;
+  }
+  if (attachment.kind === 'file') {
+    return (
+      <a
+        href={attachment.url}
+        target="_blank"
+        rel="noreferrer"
+        className={`flex items-center gap-2 rounded-lg px-2.5 py-2 mb-1.5 border text-xs font-medium transition ${
+          attachment.url
+            ? 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-800'
+            : 'bg-slate-50 border-slate-200 text-slate-500 cursor-default'
+        }`}
+      >
+        <div className="w-8 h-8 rounded-md bg-blue-100 text-blue-700 flex items-center justify-center text-[9px] font-black flex-shrink-0">
+          {attachment.name ? attachment.name.split('.').pop()?.slice(0, 4).toUpperCase() : 'FILE'}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-bold truncate">{attachment.name || 'File đính kèm'}</p>
+          {attachment.size !== undefined && (
+            <p className="text-[10px] opacity-70">
+              {attachment.size >= 1024 * 1024
+                ? (attachment.size / (1024 * 1024)).toFixed(1) + ' MB'
+                : Math.max(1, Math.round(attachment.size / 1024)) + ' KB'}
+            </p>
+          )}
+        </div>
+        {attachment.url && <span className="text-[10px] font-bold text-blue-600 flex-shrink-0">TẢI XUỐNG</span>}
+      </a>
+    );
+  }
+  if (attachment.kind === 'link' && attachment.url) {
+    return (
+      <a
+        href={attachment.url}
+        target="_blank"
+        rel="noreferrer"
+        className="block mb-1.5 rounded-lg overflow-hidden border border-slate-200 bg-white"
+      >
+        {attachment.thumb && <img src={attachment.thumb} alt="" className="w-full max-h-28 object-cover" />}
+        <div className="px-2.5 py-1.5">
+          {attachment.title && <p className="text-[11px] font-bold text-slate-800 truncate">{attachment.title}</p>}
+          {attachment.description && (
+            <p className="text-[10px] text-slate-500 truncate">{attachment.description}</p>
+          )}
+          <p className="text-[10px] text-blue-600 font-semibold mt-0.5 truncate">{attachment.url}</p>
+        </div>
+      </a>
+    );
+  }
+  if (attachment.kind === 'voice' && attachment.url) {
+    return (
+      <audio controls preload="none" className="h-8 max-w-full mb-1.5" src={attachment.url}>
+        Trình duyệt không hỗ trợ phát âm thanh.
+      </audio>
+    );
+  }
+  return null;
 }
 
 export function ChatWindow({
@@ -166,7 +236,8 @@ export function ChatWindow({
                         : 'bg-white text-slate-800 rounded-bl-none border border-slate-200/80'
                     }`}
                   >
-                    <p className="whitespace-pre-wrap font-sans">{msg.content}</p>
+                    {msg.attachment && <AttachmentMedia attachment={msg.attachment} />}
+                    {msg.content && <p className="whitespace-pre-wrap font-sans">{msg.content}</p>}
 
                     <div className={`flex items-center justify-between mt-1 text-[10px] gap-3 ${msg.is_from_me ? 'text-white/60' : 'text-slate-400'}`}>
                       <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>

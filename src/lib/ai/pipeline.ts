@@ -10,6 +10,7 @@ export interface IncomingMessageInput {
   sender_name: string;
   is_from_me: boolean;
   content: string;
+  attachment?: Message['attachment'];
   timestamp: string;
 }
 
@@ -44,6 +45,7 @@ export async function handleIncomingMessage(input: IncomingMessageInput): Promis
       sender_name: input.sender_name,
       is_from_me: input.is_from_me,
       content: input.content,
+      attachment: input.attachment,
       timestamp: input.timestamp,
       ai_processed: false,
     });

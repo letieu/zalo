@@ -23,6 +23,18 @@ export interface Conversation {
   contact_id?: string;
   last_ai_summary_at?: string;
 }
+export type AttachmentKind = 'image' | 'gif' | 'file' | 'link' | 'voice' | 'sticker' | 'location';
+
+/** Parsed Zalo media/file attachment (stored as JSON in messages.attachment). */
+export interface MessageAttachment {
+  kind: AttachmentKind;
+  url?: string;
+  thumb?: string;
+  name?: string;
+  size?: number;
+  title?: string;
+  description?: string;
+}
 
 export interface Message {
   id: string;
@@ -32,6 +44,7 @@ export interface Message {
   sender_name: string;
   is_from_me: boolean;
   content: string;
+  attachment?: MessageAttachment | null;
   timestamp: string;
   ai_processed: boolean;
 }
@@ -41,6 +54,10 @@ export interface Task {
   conversation_id: string;
   title: string;
   description?: string;
+  /** Who asked (deterministic: source message sender; 'Tôi' when from_me). */
+  requester?: string;
+  /** Who must do it (AI-extracted; defaults to 'Tôi'). */
+  assignee?: string;
   status: TaskStatus;
   priority: TaskPriority;
   deadline?: string;
@@ -138,6 +155,8 @@ export interface AIAnalysisResult {
     deadline?: string;
     source_msg_id?: string;
     source_msg_text?: string;
+    /** Who must do it; defaults to 'Tôi' when unknown. */
+    assignee?: string;
   }>;
   completedTaskIds: Array<{
     task_id: string;

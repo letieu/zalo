@@ -108,8 +108,12 @@ export class AIProcessor {
         const senderLabel = msg.is_from_me ? 'Tôi' : msg.sender_name;
         const formattedTitle = `${title.replace(/^[\s\n.-]+/, '')} (${senderLabel})`;
 
-        // Avoid duplicate task titles
-        const existingTask = pendingTasks.find(t => t.title.includes(title.substring(0, 15)));
+        // Avoid duplicate task titles — but only within the SAME requester:
+        // two people asking for the same thing in a group chat are separate tasks.
+        const requester = msg.is_from_me ? 'Tôi' : msg.sender_name;
+        const existingTask = pendingTasks.find(
+          t => t.title.includes(title.substring(0, 15)) && (!t.requester || t.requester === requester)
+        );
         if (!existingTask) {
           result.newTasks.push({
             title: formattedTitle,
@@ -118,6 +122,7 @@ export class AIProcessor {
             deadline,
             source_msg_id: msg.id,
             source_msg_text: msg.content,
+            assignee: 'Tôi',
           });
         }
       }
@@ -277,7 +282,7 @@ Nhiệm vụ của bạn:
 1. Đọc lịch sử trò chuyện và xác định các CÔNG VIỆC MỚI (yêu cầu báo giá, giao hàng, chỉnh sửa file, hẹn thời gian, gửi tài liệu, v.v.).
 2. Kiểm tra danh sách CÔNG VIỆC ĐANG CHỜ và xác định nếu có tin nhắn mới nào XÁC NHẬN CÔNG VIỆC ĐÃ HOÀN THÀNH (ví dụ: đã gửi file, đã giao hàng, đã thanh toán, khách xác nhận đã nhận).
 3. Nếu tin nhắn mới chỉ là PHẢN HỒI hoặc BỔ SUNG cho một CÔNG VIỆC ĐANG CHỜ đã có (cùng vấn đề, cùng khách hàng, cùng hội thoại — ví dụ: khách phàn nàn đã tạo task, sau đó phía mình trả lời "để em check"), TUYỆT ĐỐI KHÔNG tạo công việc mới — trả về "newTasks": []. Chỉ tạo công việc mới khi nội dung là một yêu cầu hoàn toàn khác chưa được bao phủ.
-
+4. PHÂN BIỆT NGƯỜI YÊU CẦU: mỗi công việc thuộc về đúng người gửi yêu cầu. Trong NHÓM CHAT, yêu cầu của người này KHÔNG được gộp vào công việc của người khác — mỗi yêu cầu tạo một task riêng với "assignee" đúng người phải thực hiện.
 LỊCH SỬ TIN NHẮN CHAT:
 ${chatHistory || '(Không có tin nhắn)'}
 
@@ -292,6 +297,7 @@ Trả về KẾT QUẢ duy nhất dưới dạng JSON hợp lệ theo cấu trú
       "description": "Chi tiết công việc và yêu cầu cụ thể",
       "priority": "low" | "medium" | "high",
       "deadline": "Thời gian hoàn thành nếu đề cập (vd: 16:00 hôm nay) hoặc null",
+      "assignee": "Người phải thực hiện — mặc định \"Tôi\"; nếu tin nhắn giao việc cho người khác (vd '@Thảo Vân') thì ghi chính xác tên người đó",
       "source_msg_id": "ID tin nhắn gốc tạo ra task này",
       "source_msg_text": "Trích dẫn tin nhắn gốc"
     }
@@ -316,6 +322,7 @@ Trả về KẾT QUẢ duy nhất dưới dạng JSON hợp lệ theo cấu trú
           deadline?: string;
           source_msg_id?: string;
           source_msg_text?: string;
+          assignee?: string;
         }>;
         completedTaskIds?: Array<{
           task_id: string;
@@ -331,6 +338,7 @@ Trả về KẾT QUẢ duy nhất dưới dạng JSON hợp lệ theo cấu trú
           deadline: t.deadline || undefined,
           source_msg_id: t.source_msg_id || undefined,
           source_msg_text: t.source_msg_text || undefined,
+          assignee: t.assignee || undefined,
         })),
         completedTaskIds: parsed.completedTaskIds || [],
       };

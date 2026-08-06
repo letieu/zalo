@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dbQueries } from '@/lib/db/sqlite';
 import { AIProcessor } from '@/lib/ai/processor';
+import { applyTaskAnalysis } from '@/lib/ai/task-apply';
 
 export async function POST(request: NextRequest) {
   try {
@@ -11,41 +12,27 @@ export async function POST(request: NextRequest) {
     }
 
     const messages = dbQueries.getMessagesByConversationId(body.conversation_id);
-    const pendingTasks = dbQueries.getTasks(body.conversation_id);
+    const tasks = dbQueries.getTasks(body.conversation_id);
     const settings = dbQueries.getSettings();
 
-    const aiResult = await AIProcessor.analyzeConversation(messages, pendingTasks, settings);
+    const aiResult = await AIProcessor.analyzeConversation(messages, tasks, settings);
 
-    let createdCount = 0;
-    let completedCount = 0;
-
-    // Create tasks
-    for (const taskData of aiResult.newTasks) {
-      dbQueries.addTask({
-        conversation_id: body.conversation_id,
-        title: taskData.title,
-        description: taskData.description,
-        status: 'pending',
-        priority: taskData.priority,
-        deadline: taskData.deadline,
-        source_msg_id: taskData.source_msg_id,
-        source_msg_text: taskData.source_msg_text,
-        ai_created: true,
-        ai_completed: false,
-      });
-      createdCount++;
-    }
-
-    // Complete tasks
-    for (const item of aiResult.completedTaskIds) {
-      dbQueries.updateTaskStatus(item.task_id, 'completed', item.reason, true);
-      completedCount++;
-    }
+    // Same deterministic application as the event-driven TaskWorker — the
+    // manual "Quét AI Task" button must not create duplicates the worker
+    // would have merged (one task per issue, per requester/assignee).
+    const { created, completed } = applyTaskAnalysis({
+      conversationId: body.conversation_id,
+      messages,
+      tasks,
+      result: aiResult,
+      autoTaskExtraction: true,
+      autoTaskCompletion: true,
+    });
 
     return NextResponse.json({
       success: true,
-      createdCount,
-      completedCount,
+      createdCount: created,
+      completedCount: completed,
       aiResult,
     });
   } catch (error) {

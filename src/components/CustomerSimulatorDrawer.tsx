@@ -1,15 +1,21 @@
 'use client';
 
 import { useState } from 'react';
-import { Conversation } from '@/types';
-import { X, Send, Sparkles, User, MessageSquare } from 'lucide-react';
+import { Conversation, MessageAttachment } from '@/types';
+import { X, Send, Sparkles, MessageSquare, Image as ImageIcon, FileText } from 'lucide-react';
 
 interface CustomerSimulatorDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   conversations: Conversation[];
   activeConvId: string | null;
-  onSendSimulatedMessage: (conversationId: string, content: string) => void;
+  onSendSimulatedMessage: (conversationId: string, content: string, attachment?: MessageAttachment) => void;
+}
+
+interface SimulatorPreset {
+  label: string;
+  content: string;
+  attachment?: MessageAttachment;
 }
 
 export function CustomerSimulatorDrawer({
@@ -24,7 +30,7 @@ export function CustomerSimulatorDrawer({
 
   if (!isOpen) return null;
 
-  const presets = [
+  const presets: SimulatorPreset[] = [
     {
       label: 'Yêu cầu Báo giá Gấp (Tự tạo Task mới)',
       content: 'Nhờ em gửi báo giá 10 bàn phím cơ Logitech sang email hỗ trợ trước 5h chiều nay nhé!',
@@ -41,11 +47,31 @@ export function CustomerSimulatorDrawer({
       label: 'Xác nhận Đã sửa Banner (Tự hoàn thành Task)',
       content: 'Đã nhận được file banner sửa logo đỏ rồi nhé, nhìn đẹp lắm em!',
     },
+    {
+      label: 'Gửi Hình Ảnh (File đính kèm hiển thị)',
+      content: 'Ảnh chụp hàng đã đóng gói đây em',
+      attachment: {
+        kind: 'image',
+        url: 'https://picsum.photos/seed/zalo-crm/800/600',
+        thumb: 'https://picsum.photos/seed/zalo-crm/400/300',
+        name: 'hang-dong-goi.jpg',
+      },
+    },
+    {
+      label: 'Gửi File Bảng Giá (Hiển thị thẻ File)',
+      content: 'File bảng giá mới nhất đây em',
+      attachment: {
+        kind: 'file',
+        url: 'https://example.com/bang-gia-2026.xlsx',
+        name: 'bang-gia-2026.xlsx',
+        size: 153600,
+      },
+    },
   ];
 
-  const handleSendPreset = (content: string) => {
+  const handleSendPreset = (preset: SimulatorPreset) => {
     if (!selectedConvId) return;
-    onSendSimulatedMessage(selectedConvId, content);
+    onSendSimulatedMessage(selectedConvId, preset.content, preset.attachment);
     onClose();
   };
 
@@ -78,7 +104,7 @@ export function CustomerSimulatorDrawer({
         </div>
 
         {/* Body */}
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
           {/* Select Target Conversation */}
           <div>
             <label className="block text-xs font-bold text-slate-700 mb-1">Chọn Khách hàng đóng vai gửi tin:</label>
@@ -102,14 +128,22 @@ export function CustomerSimulatorDrawer({
               {presets.map((p, idx) => (
                 <button
                   key={idx}
-                  onClick={() => handleSendPreset(p.content)}
+                  onClick={() => handleSendPreset(p)}
                   className="w-full p-2.5 bg-slate-50 hover:bg-indigo-50/80 active:bg-indigo-100 border border-slate-200 hover:border-indigo-300 active:border-indigo-400 rounded-xl text-left transition group"
                 >
                   <div className="flex items-center justify-between mb-0.5">
                     <span className="text-xs font-bold text-slate-700 group-hover:text-indigo-900">{p.label}</span>
-                    <Sparkles className="w-3 h-3 text-indigo-500 opacity-0 group-hover:opacity-100 transition" />
+                    {p.attachment ? (
+                      p.attachment.kind === 'image' ? (
+                        <ImageIcon className="w-3 h-3 text-blue-500" />
+                      ) : (
+                        <FileText className="w-3 h-3 text-blue-500" />
+                      )
+                    ) : (
+                      <Sparkles className="w-3 h-3 text-indigo-500 opacity-0 group-hover:opacity-100 transition" />
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-500 group-hover:text-indigo-700 italic">"{p.content}"</p>
+                  <p className="text-[11px] text-slate-500 group-hover:text-indigo-700 italic truncate">"{p.content}"</p>
                 </button>
               ))}
             </div>
