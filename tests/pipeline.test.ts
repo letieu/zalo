@@ -248,4 +248,51 @@ describe('task worker — one task per issue (no duplicate follow-ups)', () => {
     expect(tasks).toHaveLength(2);
     expect(tasks.map(t => t.requester).sort()).toEqual(['Thảo Vân', 'Trang Moon']);
   });
+
+  it('does not complete a task using a confirmation message older than the task', async () => {
+    dbQueries.updateSettings({
+      ...noLLM,
+      auto_task_extraction: true,
+      auto_task_completion: true,
+      ai_provider: 'smart_heuristic',
+    });
+    const conv = freshConv();
+    const t0 = Date.now();
+    // Old confirmation for an EARLIER piece of work (seed-conversation style).
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_time_old',
+      sender_id: 'me',
+      sender_name: 'Tôi',
+      is_from_me: true,
+      content: 'Dạ xong rồi ạ. Em đã đặt xong 10 thùng nước ngọt, gửi bảng giá qua email và chốt lịch 9h sáng mai với khách.',
+      timestamp: new Date(t0).toISOString(),
+    });
+    // New task created AFTER that confirmation.
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_time_task',
+      sender_id: 'c1',
+      sender_name: 'Khách',
+      is_from_me: false,
+      content: 'Nhờ em gửi bảng giá combo máy in laser kèm phụ kiện trước thứ sáu nhé',
+      timestamp: new Date(t0 + 60_000).toISOString(),
+    });
+
+    const tasks = dbQueries.getTasks(conv.id, 'pending');
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].status).toBe('pending'); // old confirmation must NOT close it
+
+    // A genuine confirmation AFTER the task was created DOES complete it.
+    await handleIncomingMessage({
+      conversation_id: conv.id,
+      zalo_msg_id: 'z_time_done',
+      sender_id: 'me',
+      sender_name: 'Tôi',
+      is_from_me: true,
+      content: 'Đã gửi bảng giá combo máy in laser cho khách rồi ạ',
+      timestamp: new Date(t0 + 120_000).toISOString(),
+    });
+    expect(dbQueries.getTasks(conv.id, 'pending')).toHaveLength(0);
+  });
 });

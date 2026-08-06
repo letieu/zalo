@@ -141,6 +141,9 @@ export class AIProcessor {
 
       // Search latest messages for completion indicators
       for (const msg of recentMessages) {
+        // Completion evidence must POSTDATE the task: an old confirmation
+        // (e.g. a reply to an earlier task) must never close a newer task.
+        if (task.created_at && msg.timestamp < task.created_at) continue;
         const text = msg.content.toLowerCase();
 
         // Completion indicator phrases in Vietnamese
@@ -269,12 +272,12 @@ export class AIProcessor {
   private static buildLLMPrompt(messages: Message[], pendingTasks: Task[]): string {
     const chatHistory = messages
       .slice(-15)
-      .map(m => `[ID: ${m.id}] ${m.is_from_me ? 'Tôi' : m.sender_name}: "${m.content}"`)
+      .map(m => `[ID: ${m.id}] ${m.is_from_me ? 'Tôi' : m.sender_name} (${m.timestamp}): "${m.content}"`)
       .join('\n');
 
     const tasksList = pendingTasks
       .filter(t => t.status === 'pending' || t.status === 'in_progress')
-      .map(t => `[Task ID: ${t.id}] "${t.title}" (Chi tiết: ${t.description || 'Không'})`)
+      .map(t => `[Task ID: ${t.id}] "${t.title}" (Chi tiết: ${t.description || 'Không'}) (Tạo lúc: ${t.created_at || 'không rõ'})`)
       .join('\n');
 
     return `Bạn là Trợ lý AI Quản lý Công việc từ Đoạn Chat Zalo.
@@ -283,6 +286,7 @@ Nhiệm vụ của bạn:
 2. Kiểm tra danh sách CÔNG VIỆC ĐANG CHỜ và xác định nếu có tin nhắn mới nào XÁC NHẬN CÔNG VIỆC ĐÃ HOÀN THÀNH (ví dụ: đã gửi file, đã giao hàng, đã thanh toán, khách xác nhận đã nhận).
 3. Nếu tin nhắn mới chỉ là PHẢN HỒI hoặc BỔ SUNG cho một CÔNG VIỆC ĐANG CHỜ đã có (cùng vấn đề, cùng khách hàng, cùng hội thoại — ví dụ: khách phàn nàn đã tạo task, sau đó phía mình trả lời "để em check"), TUYỆT ĐỐI KHÔNG tạo công việc mới — trả về "newTasks": []. Chỉ tạo công việc mới khi nội dung là một yêu cầu hoàn toàn khác chưa được bao phủ.
 4. PHÂN BIỆT NGƯỜI YÊU CẦU: mỗi công việc thuộc về đúng người gửi yêu cầu. Trong NHÓM CHAT, yêu cầu của người này KHÔNG được gộp vào công việc của người khác — mỗi yêu cầu tạo một task riêng với "assignee" đúng người phải thực hiện.
+5. THỜI GIAN HOÀN THÀNH: một CÔNG VIỆC ĐANG CHỜ chỉ được đưa vào "completedTaskIds" nếu có tin nhắn có thời gian (timestamp) SAU thời điểm "Tạo lúc" của công việc đó thể hiện rõ công việc đã xong. Tin nhắn CŨ HƠN thời điểm tạo công việc KHÔNG được dùng làm bằng chứng hoàn thành — ví dụ một xác nhận "xong rồi" từ trả lời của công việc khác không được đóng công việc này. Không có tin nhắn xác nhận sau thời điểm tạo? Trả về completedTaskIds rỗng.
 LỊCH SỬ TIN NHẮN CHAT:
 ${chatHistory || '(Không có tin nhắn)'}
 
